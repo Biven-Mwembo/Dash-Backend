@@ -5,16 +5,21 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-builder.Services.AddControllers();
-
-// Load Supabase settings from environment / appsettings.json
+// ---------------------------------------------------------
+// Load Supabase settings
+// ---------------------------------------------------------
 var supabaseUrl = builder.Configuration["Supabase:Url"];
 var supabaseAnonKey = builder.Configuration["Supabase:AnonKey"];
-var supabaseServiceRoleKey = builder.Configuration["Supabase:ServiceRoleKey"];
 var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST match GoTrue JWT Secret
 
-// Register Supabase Client (use anon key for normal client operations)
+// ---------------------------------------------------------
+// Controllers
+// ---------------------------------------------------------
+builder.Services.AddControllers();
+
+// ---------------------------------------------------------
+// Supabase Client (public anon key only)
+// ---------------------------------------------------------
 builder.Services.AddSingleton<Supabase.Client>(sp =>
 {
     var options = new Supabase.SupabaseOptions
@@ -26,7 +31,9 @@ builder.Services.AddSingleton<Supabase.Client>(sp =>
     return new Supabase.Client(supabaseUrl, supabaseAnonKey, options);
 });
 
-// JWT Authentication — VALIDATES Supabase-issued JWTs
+// ---------------------------------------------------------
+// JWT Authentication for Supabase Auth tokens
+// ---------------------------------------------------------
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -39,16 +46,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudience = "authenticated",
 
             ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
 
-            // Supabase JWT Secret (from Settings ? Auth ? JWT ? JWT Secret)
+            ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(supabaseJwtSecret))
         };
     });
 
 builder.Services.AddAuthorization();
 
-// CORS
+// ---------------------------------------------------------
+// CORS (must match EXACT frontend URL)
+// ---------------------------------------------------------
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
@@ -60,22 +68,50 @@ builder.Services.AddCors(options =>
     });
 });
 
+// ---------------------------------------------------------
 // Swagger
+// ---------------------------------------------------------
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+
+
 var app = builder.Build();
 
+// ---------------------------------------------------------
+// Development tools
+// ---------------------------------------------------------
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+// ---------------------------------------------------------
+// FORCE CORS HEADERS (Render fix)
+// ---------------------------------------------------------
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["Access-Control-Allow-Origin"] = "https://kinlight.netlify.app";
+    context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+    context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+    context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
+
+    // Handle preflight cleanly
+    if (context.Request.Method == "OPTIONS")
+    {
+        context.Response.StatusCode = 200;
+        return;
+    }
+
+    await next();
+});
+
+// ---------------------------------------------------------
+// Pipeline ordering (VERY IMPORTANT)
+// ---------------------------------------------------------
 app.UseHttpsRedirection();
-
 app.UseCors("AllowReactApp");
-
 app.UseAuthentication();
 app.UseAuthorization();
 
