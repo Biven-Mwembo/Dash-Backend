@@ -1,0 +1,18 @@
+# General ignore list for .NET and Visual Studio projects
+
+# Binaries, artifacts and dependencies
+[Bb]in/
+[Oo]bj/
+node_modules/
+.DS_Store
+
+# Visual Studio files and caches
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Database files
+*.mdf
+*.ldf
+*.sdf
