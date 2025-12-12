@@ -8,51 +8,64 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 
-// Add Supabase client
+// Load Supabase settings from environment / appsettings.json
+var supabaseUrl = builder.Configuration["Supabase:Url"];
+var supabaseAnonKey = builder.Configuration["Supabase:AnonKey"];
+var supabaseServiceRoleKey = builder.Configuration["Supabase:ServiceRoleKey"];
+var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST match GoTrue JWT Secret
+
+// Register Supabase Client (use anon key for normal client operations)
 builder.Services.AddSingleton<Supabase.Client>(sp =>
 {
-    var config = sp.GetRequiredService<IConfiguration>();
-    return new Supabase.Client(config["Supabase:Url"], config["Supabase:Key"]);
+    var options = new Supabase.SupabaseOptions
+    {
+        AutoRefreshToken = true,
+        AutoConnectRealtime = false
+    };
+
+    return new Supabase.Client(supabaseUrl, supabaseAnonKey, options);
 });
 
-// Add JWT authentication (updated for Supabase JWT validation)
+// JWT Authentication — VALIDATES Supabase-issued JWTs
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuer = $"{builder.Configuration["Supabase:Url"]}/auth/v1", // Supabase issuer
+            ValidIssuer = $"{supabaseUrl}/auth/v1",
+
             ValidateAudience = true,
-            ValidAudience = "authenticated", // Supabase audience
+            ValidAudience = "authenticated",
+
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes("vIrsfVAudYwpMy0hGf3e77J4IiOjluQUfrAAbCnCDH52BzkPoafq6Etjxfu8X8USeQkaKDQ8JBbb8849uF12MQ==")) // Replace with your actual JWT secret from Supabase
+
+            // Supabase JWT Secret (from Settings ? Auth ? JWT ? JWT Secret)
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(supabaseJwtSecret))
         };
     });
 
 builder.Services.AddAuthorization();
 
-// ----------------- CORS Setup -----------------
+// CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
     {
-        policy.WithOrigins("https://kinlight.netlify.app/") // React dev server URL
+        policy.WithOrigins("https://kinlight.netlify.app")
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials(); // needed if sending cookies
+              .AllowCredentials();
     });
 });
-// -------------------------------------------------
 
-// Swagger/OpenAPI
+// Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -61,7 +74,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// Apply CORS BEFORE authentication/authorization
 app.UseCors("AllowReactApp");
 
 app.UseAuthentication();
