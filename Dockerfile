@@ -1,23 +1,22 @@
-# Stage 1: Build
+# BUILD STAGE
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+
+WORKDIR /src
+
+# Copy the entire repo
+COPY . .
+
+# Auto-detect the .csproj (instead of hardcoding)
+RUN dotnet restore $(find . -name "*.csproj")
+
+# Publish
+RUN dotnet publish $(find . -name "*.csproj") -c Release -o /app/publish
+
+
+# RUNTIME STAGE
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 
-# Copy project file(s) and restore dependencies
-COPY *.csproj ./
-RUN dotnet restore
+COPY --from=build /app/publish .
 
-# Copy everything else and publish
-COPY . ./
-RUN dotnet publish -c Release -o out
-
-# Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
-WORKDIR /app
-COPY --from=build /app/out ./
-
-# Expose port for Render
-ENV ASPNETCORE_URLS=http://+:10000
-EXPOSE 10000
-
-# Start the app
 ENTRYPOINT ["dotnet", "Pharma.dll"]
