@@ -1,374 +1,361 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+using Pharma.Models;
 using Supabase;
+using Supabase.Postgrest.Exceptions;
 using Product = Pharma.Models.Product;
 using Sale = Pharma.Models.Sale;
-using Pharma.Models; // For ProductDto and SaleItemDto
 
-[ApiController]
-[Route("api/products")]
-[Authorize]
-public class ProductsController : ControllerBase
+namespace Pharma.Controllers
 {
-    private readonly Supabase.Client _supabase;
-
-    public ProductsController(Supabase.Client supabase) => _supabase = supabase;
-
-    [HttpGet]
-    public async Task<IActionResult> GetProducts()
+    [ApiController]
+    [Route("api/products")]
+    [Authorize]
+    public class ProductsController : ControllerBase
     {
-        try
+        private readonly Supabase.Client _supabase;
+        private readonly ILogger<ProductsController> _logger;
+
+        public ProductsController(Supabase.Client supabase, ILogger<ProductsController> logger)
         {
-            Console.WriteLine("Fetching products...");
-            var products = await _supabase.From<Product>().Get();
-            Console.WriteLine($"Fetched {products.Models.Count} products.");
-            if (!products.Models.Any())
+            _supabase = supabase ?? throw new ArgumentNullException(nameof(supabase));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetProducts()
+        {
+            try
             {
-                Console.WriteLine("No products found.");
-                return Ok(new List<ProductDto>()); // Return empty list
+                var products = await _supabase.From<Product>().Get();
+                var productDtos = (products.Models ?? new List<Product>()).Select(p => new ProductDto
+                {
+                    Id = p.Id,
+                    ProductCode = p.ProductCode,
+                    Name = p.Name,
+                    Quantity = p.Quantity,
+                    Price = p.Price,
+                    PrixAchat = p.PrixAchat,
+                    SupplierId = p.SupplierId,
+                    CreatedAt = p.CreatedAt
+                }).ToList();
+
+                return Ok(productDtos);
             }
-
-            // Map to DTOs for safe serialization
-            var productDtos = products.Models.Select(p => new ProductDto
+            catch (PostgrestException pe)
             {
-                Id = p.Id,
-                ProductCode = p.ProductCode,
-                Name = p.Name,
-                Quantity = p.Quantity,
-                Price = p.Price,
-                PrixAchat = p.PrixAchat,
-                SupplierId = p.SupplierId,
-                CreatedAt = p.CreatedAt
-            }).ToList();
-            Console.WriteLine("Mapped products successfully.");
-            return Ok(productDtos);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error retrieving products: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-            return StatusCode(500, $"Error retrieving products: {ex.Message}");
-        }
-    }
-
-    [HttpGet("{id}")]
-    public async Task<IActionResult> GetProduct(long id)
-    {
-        try
-        {
-            var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
-            if (product == null) return NotFound();
-            // Map to DTO
-            var productDto = new ProductDto
-            {
-                Id = product.Id,
-                ProductCode = product.ProductCode,
-                Name = product.Name,
-                Quantity = product.Quantity,
-                Price = product.Price,
-                PrixAchat = product.PrixAchat,
-                SupplierId = product.SupplierId,
-                CreatedAt = product.CreatedAt
-            };
-            return Ok(productDto);
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Error retrieving product: {ex.Message}");
-        }
-    }
-
-    [HttpPost]
-    public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)  // Use DTO for input
-    {
-        try
-        {
-            // Map DTO to Supabase model
-            var product = new Product
-            {
-                ProductCode = !string.IsNullOrEmpty(productDto.ProductCode) ? productDto.ProductCode : await GenerateNextProductCode(), // Use manual code if provided, else auto-generate
-                Name = productDto.Name,
-                Quantity = productDto.Quantity,
-                Price = productDto.Price,
-                PrixAchat = productDto.PrixAchat,
-                SupplierId = productDto.SupplierId
-            };
-
-            var response = await _supabase.From<Product>().Insert(product);
-            var createdProduct = response.Models.First();
-
-            // Map back to DTO for response
-            var resultDto = new ProductDto
-            {
-                Id = createdProduct.Id,
-                ProductCode = createdProduct.ProductCode,
-                Name = createdProduct.Name,
-                Quantity = createdProduct.Quantity,
-                Price = createdProduct.Price,
-                PrixAchat = productDto.PrixAchat,
-                SupplierId = createdProduct.SupplierId,
-                CreatedAt = createdProduct.CreatedAt
-            };
-
-            return Ok(resultDto);
-        }
-        catch (Supabase.Postgrest.Exceptions.PostgrestException postgrestEx) when (postgrestEx.Message.Contains("violates row-level security policy"))
-        {
-            // Explicitly handle the RLS violation error (Code 42501)
-            // Returning 403 Forbidden is more accurate for a permission issue.
-            // The client will log the full error text.
-            return StatusCode(403, $"Permission Denied: new row violates row-level security policy for table \"products\"");
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Error creating product: {ex.Message}");
-        }
-    }
-
-    [HttpPut("{id}")]
-    public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto) // Use DTO
-    {
-        try
-        {
-            // Map DTO to Supabase model
-            var product = new Product
-            {
-                // 💡 CRITICAL FIX: Set the Primary Key (Id)
-                Id = id,
-                ProductCode = productDto.ProductCode,
-                Name = productDto.Name,
-                Quantity = productDto.Quantity,
-                Price = productDto.Price,
-                PrixAchat = productDto.PrixAchat,
-                SupplierId = productDto.SupplierId
-            };
-
-            // This query is correct, but relies on the product object being correctly formed.
-            await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
-
-            return Ok();
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Error updating product: {ex.Message}");
-        }
-    }
-
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteProduct(long id)
-    {
-        try
-        {
-            await _supabase.From<Product>().Where(p => p.Id == id).Delete();
-            return Ok();
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Error deleting product: {ex.Message}");
-        }
-    }
-
-    [HttpPost("{id}/sell")]
-    public async Task<IActionResult> SellProduct(long id, [FromBody] int quantitySold)
-    {
-        try
-        {
-            var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
-            if (product == null) return NotFound("Product not found.");
-            if (product.Quantity < quantitySold) return BadRequest("Insufficient stock.");
-
-            // Update quantity
-            product.Quantity -= quantitySold;
-            await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
-
-            // Record sale
-            await _supabase.From<Sale>().Insert(new Sale { ProductId = id, QuantitySold = quantitySold });  // Updated: Use id directly as long
-
-            return Ok($"Sold {quantitySold} units of {product.Name}. Remaining quantity: {product.Quantity}");
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Error selling product: {ex.Message}");
-        }
-    }
-
-    // Updated: Handle checkout for multiple cart items with better logging
-    [HttpPost("sale")]
-    public async Task<IActionResult> CreateSale([FromBody] List<SaleItemDto> saleItems)
-    {
-        try
-        {
-            Console.WriteLine("Starting checkout process...");
-            foreach (var item in saleItems)
-            {
-                Console.WriteLine($"Processing item: ProductId={item.ProductId}, QuantitySold={item.QuantitySold}");
-
-                // Fetch product to check stock and get details
-                var product = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
-                if (product == null)
-                {
-                    Console.WriteLine($"Product {item.ProductId} not found.");
-                    return BadRequest($"Product {item.ProductId} not found.");
-                }
-                if (product.Quantity < item.QuantitySold)
-                {
-                    Console.WriteLine($"Insufficient stock for {product.Name}: Available {product.Quantity}, Requested {item.QuantitySold}");
-                    return BadRequest($"Insufficient stock for {product.Name}.");
-                }
-
-                // Update quantity
-                product.Quantity -= item.QuantitySold;
-                await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Update(product);
-                Console.WriteLine($"Updated quantity for {product.Name} to {product.Quantity}");
-
-                // Record sale
-                await _supabase.From<Sale>().Insert(new Sale { ProductId = item.ProductId, QuantitySold = item.QuantitySold });  // Updated: Use item.ProductId directly as long
-                Console.WriteLine($"Recorded sale for {product.Name}");
+                _logger.LogError(pe, "Postgrest error fetching products");
+                return StatusCode(500, "Error fetching products. Please check logs for details.");
             }
-
-            Console.WriteLine("Checkout completed successfully.");
-            return Ok("Sale completed successfully.");
-        }
-        catch (Supabase.Postgrest.Exceptions.PostgrestException postgrestEx) when (postgrestEx.Message.Contains("violates row-level security policy"))
-        {
-            Console.WriteLine($"RLS violation: {postgrestEx.Message}");
-            return StatusCode(403, $"Permission Denied: new row violates row-level security policy for table \"products\" or \"sales\"");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"General error in CreateSale: {ex.Message}");
-            return StatusCode(500, $"Error processing sale: {ex.Message}");
-        }
-    }
-
-    [HttpGet("sales")]
-    public async Task<IActionResult> GetSales()
-    {
-        try
-        {
-            Console.WriteLine("Fetching detailed sales...");
-            var sales = await _supabase.From<Sale>().Get();
-            var products = await _supabase.From<Product>().Get(); // Fetch all products for mapping
-
-            Console.WriteLine($"Fetched {sales.Models.Count} sales and {products.Models.Count} products.");
-
-            if (!sales.Models.Any())
+            catch (Exception ex)
             {
-                Console.WriteLine("No sales found.");
-                return Ok(new List<object>()); // Return empty list if no sales
+                _logger.LogError(ex, "Unexpected error fetching products");
+                return StatusCode(500, "Error fetching products. Please check logs for details.");
             }
+        }
 
-            var salesWithDetails = sales.Models.Select(s => {
-                var product = products.Models.FirstOrDefault(p => p.Id == s.ProductId);  // Direct long comparison
-                if (product == null)
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetProduct(long id)
+        {
+            try
+            {
+                var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
+                if (product == null) return NotFound();
+
+                var productDto = new ProductDto
                 {
-                    Console.WriteLine($"Product {s.ProductId} not found for sale {s.Id}.");
-                    return null; // Skip if product not found
-                }
-                return new
-                {
-                    ProductName = product.Name,
-                    QuantitySold = s.QuantitySold,
-                    PricePerItem = product.Price,
-                    TotalAmount = product.Price * s.QuantitySold,
-                    SaleDate = s.SaleDate  // Added: Include sale date for Date and Time columns
+                    Id = product.Id,
+                    ProductCode = product.ProductCode,
+                    Name = product.Name,
+                    Quantity = product.Quantity,
+                    Price = product.Price,
+                    PrixAchat = product.PrixAchat,
+                    SupplierId = product.SupplierId,
+                    CreatedAt = product.CreatedAt
                 };
-            }).Where(s => s != null).ToList(); // Filter out nulls
-
-            Console.WriteLine("Mapped detailed sales successfully.");
-            return Ok(salesWithDetails);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error retrieving detailed sales: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-            return StatusCode(500, $"Error retrieving detailed sales: {ex.Message}");
-        }
-    }
-
-    [HttpGet("sales/daily")]
-    public async Task<IActionResult> GetDailySales()
-    {
-        try
-        {
-            Console.WriteLine("Fetching daily sales...");
-            var sales = await _supabase.From<Sale>().Get();
-            var products = await _supabase.From<Product>().Get(); // Fetch all products for mapping
-
-            Console.WriteLine($"Fetched {sales.Models.Count} sales and {products.Models.Count} products.");
-
-            if (!sales.Models.Any())
-            {
-                Console.WriteLine("No sales found.");
-                return Ok(new List<object>()); // Return empty list if no sales
+                return Ok(productDto);
             }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error retrieving product {Id}", id);
+                return StatusCode(500, $"Error retrieving product {id}. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error retrieving product {Id}", id);
+                return StatusCode(500, $"Error retrieving product {id}. Please check logs for details.");
+            }
+        }
 
-            // Aggregate sales by date
-            var dailySales = sales.Models
-                .GroupBy(s => s.SaleDate.Date)  // Group by date (ignore time)
-                .Select(g => {
-                    var totalAmount = g.Sum(s => {
-                        var product = products.Models.FirstOrDefault(p => p.Id == s.ProductId);  // Direct long comparison
-                        if (product == null)
-                        {
-                            Console.WriteLine($"Product {s.ProductId} not found for sale.");
-                            return 0.00m; // Skip if product not found
-                        }
-                        return product.Price * s.QuantitySold;
-                    });
+        [HttpPost]
+        public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
+        {
+            try
+            {
+                var product = new Product
+                {
+                    ProductCode = !string.IsNullOrEmpty(productDto.ProductCode) ? productDto.ProductCode : await GenerateNextProductCode(),
+                    Name = productDto.Name,
+                    Quantity = productDto.Quantity,
+                    Price = productDto.Price,
+                    PrixAchat = productDto.PrixAchat,
+                    SupplierId = productDto.SupplierId
+                };
+
+                var response = await _supabase.From<Product>().Insert(product);
+                var createdProduct = response.Models.First();
+
+                var resultDto = new ProductDto
+                {
+                    Id = createdProduct.Id,
+                    ProductCode = createdProduct.ProductCode,
+                    Name = createdProduct.Name,
+                    Quantity = createdProduct.Quantity,
+                    Price = createdProduct.Price,
+                    PrixAchat = createdProduct.PrixAchat,
+                    SupplierId = createdProduct.SupplierId,
+                    CreatedAt = createdProduct.CreatedAt
+                };
+
+                return Ok(resultDto);
+            }
+            catch (PostgrestException pe) when (pe.Message.Contains("violates row-level security policy"))
+            {
+                _logger.LogWarning(pe, "RLS policy violation creating product");
+                return StatusCode(403, "Permission Denied: RLS policy violated");
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error creating product");
+                return StatusCode(500, "Error creating product. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error creating product");
+                return StatusCode(500, "Error creating product. Please check logs for details.");
+            }
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto)
+        {
+            try
+            {
+                var product = new Product
+                {
+                    Id = id,
+                    ProductCode = productDto.ProductCode,
+                    Name = productDto.Name,
+                    Quantity = productDto.Quantity,
+                    Price = productDto.Price,
+                    PrixAchat = productDto.PrixAchat,
+                    SupplierId = productDto.SupplierId
+                };
+
+                await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
+                return Ok();
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error updating product {Id}", id);
+                return StatusCode(500, $"Error updating product {id}. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error updating product {Id}", id);
+                return StatusCode(500, $"Error updating product {id}. Please check logs for details.");
+            }
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteProduct(long id)
+        {
+            try
+            {
+                await _supabase.From<Product>().Where(p => p.Id == id).Delete();
+                return Ok();
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error deleting product {Id}", id);
+                return StatusCode(500, $"Error deleting product {id}. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error deleting product {Id}", id);
+                return StatusCode(500, $"Error deleting product {id}. Please check logs for details.");
+            }
+        }
+
+        [HttpPost("{id}/sell")]
+        public async Task<IActionResult> SellProduct(long id, [FromBody] int quantitySold)
+        {
+            try
+            {
+                var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
+                if (product == null) return NotFound("Product not found.");
+                if (product.Quantity < quantitySold) return BadRequest("Insufficient stock.");
+
+                product.Quantity -= quantitySold;
+                await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
+                await _supabase.From<Sale>().Insert(new Sale { ProductId = id, QuantitySold = quantitySold });
+
+                return Ok($"Sold {quantitySold} units of {product.Name}. Remaining quantity: {product.Quantity}");
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error selling product {Id}", id);
+                return StatusCode(500, $"Error selling product {id}. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error selling product {Id}", id);
+                return StatusCode(500, $"Error selling product {id}. Please check logs for details.");
+            }
+        }
+
+        [HttpPost("sale")]
+        public async Task<IActionResult> CreateSale([FromBody] List<SaleItemDto> saleItems)
+        {
+            try
+            {
+                foreach (var item in saleItems)
+                {
+                    var product = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
+                    if (product == null) return BadRequest($"Product {item.ProductId} not found.");
+                    if (product.Quantity < item.QuantitySold) return BadRequest($"Insufficient stock for {product.Name}.");
+
+                    product.Quantity -= item.QuantitySold;
+                    await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Update(product);
+                    await _supabase.From<Sale>().Insert(new Sale { ProductId = item.ProductId, QuantitySold = item.QuantitySold });
+                }
+
+                return Ok("Sale completed successfully.");
+            }
+            catch (PostgrestException pe) when (pe.Message.Contains("violates row-level security policy"))
+            {
+                _logger.LogWarning(pe, "RLS policy violation processing sale");
+                return StatusCode(403, "Permission Denied: RLS policy violated for products or sales.");
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error processing sale");
+                return StatusCode(500, "Error processing sale. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error processing sale");
+                return StatusCode(500, "Error processing sale. Please check logs for details.");
+            }
+        }
+
+        [HttpGet("sales")]
+        public async Task<IActionResult> GetSales()
+        {
+            try
+            {
+                var sales = await _supabase.From<Sale>().Get();
+                var products = await _supabase.From<Product>().Get();
+
+                var salesWithDetails = (sales.Models ?? new List<Sale>()).Select(s =>
+                {
+                    var product = products.Models?.FirstOrDefault(p => p.Id == s.ProductId);
+                    if (product == null) return null;
+
                     return new
                     {
-                        Date = g.Key,
-                        Day = g.Key.ToString("dddd"),  // e.g., "Thursday"
-                        NumberOfSales = g.Count(),
-                        TotalAmount = totalAmount
+                        ProductName = product.Name,
+                        QuantitySold = s.QuantitySold,
+                        PricePerItem = product.Price,
+                        TotalAmount = product.Price * s.QuantitySold,
+                        SaleDate = s.SaleDate
                     };
-                })
-                .OrderByDescending(d => d.Date)  // Most recent first
-                .ToList();
+                }).Where(s => s != null).ToList();
 
-            Console.WriteLine("Aggregated daily sales successfully.");
-            return Ok(dailySales);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error retrieving daily sales: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-            return StatusCode(500, $"Error retrieving daily sales: {ex.Message}");
-        }
-    }
-
-    // Helper method to generate the next product code (e.g., PR001, PR002, ...)
-    private async Task<string> GenerateNextProductCode()
-    {
-        try
-        {
-            // Query for the highest product_code starting with "PR"
-            var products = await _supabase.From<Product>()
-                .Where(p => p.ProductCode != null && p.ProductCode.StartsWith("PR"))
-                .Order(p => p.ProductCode, Supabase.Postgrest.Constants.Ordering.Descending)
-                .Limit(1)
-                .Get();
-
-            string nextCode;
-            if (products.Models.Any())
-            {
-                var lastCode = products.Models.First().ProductCode; // e.g., "PR005"
-                var numberPart = int.Parse(lastCode.Substring(2)); // Extract 5
-                var nextNumber = numberPart + 1;
-                nextCode = $"PR{nextNumber:D3}"; // Format as PR006 (3-digit padded)
+                return Ok(salesWithDetails);
             }
-            else
+            catch (PostgrestException pe)
             {
-                nextCode = "PR001"; // Start from PR001 if none exist
+                _logger.LogError(pe, "Postgrest error retrieving sales");
+                return StatusCode(500, "Error retrieving sales. Please check logs for details.");
             }
-
-            return nextCode;
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error retrieving sales");
+                return StatusCode(500, "Error retrieving sales. Please check logs for details.");
+            }
         }
-        catch (Exception)
+
+        [HttpGet("sales/daily")]
+        public async Task<IActionResult> GetDailySales()
         {
-            // Fallback in case of error
-            return "PR001";
+            try
+            {
+                var sales = await _supabase.From<Sale>().Get();
+                var products = await _supabase.From<Product>().Get();
+
+                var dailySales = (sales.Models ?? new List<Sale>())
+                    .GroupBy(s => s.SaleDate.Date)
+                    .Select(g =>
+                    {
+                        var totalAmount = g.Sum(s =>
+                        {
+                            var product = products.Models?.FirstOrDefault(p => p.Id == s.ProductId);
+                            return product != null ? product.Price * s.QuantitySold : 0.0m;
+                        });
+
+                        return new
+                        {
+                            Date = g.Key,
+                            Day = g.Key.ToString("dddd"),
+                            NumberOfSales = g.Count(),
+                            TotalAmount = totalAmount
+                        };
+                    })
+                    .OrderByDescending(d => d.Date)
+                    .ToList();
+
+                return Ok(dailySales);
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error retrieving daily sales");
+                return StatusCode(500, "Error retrieving daily sales. Please check logs for details.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error retrieving daily sales");
+                return StatusCode(500, "Error retrieving daily sales. Please check logs for details.");
+            }
+        }
+
+        private async Task<string> GenerateNextProductCode()
+        {
+            try
+            {
+                var products = await _supabase.From<Product>()
+                    .Where(p => p.ProductCode != null && p.ProductCode.StartsWith("PR"))
+                    .Order(p => p.ProductCode, Supabase.Postgrest.Constants.Ordering.Descending)
+                    .Limit(1)
+                    .Get();
+
+                if (products.Models != null && products.Models.Any())
+                {
+                    var lastCode = products.Models.First().ProductCode;
+                    if (int.TryParse(lastCode.Substring(2), out var numberPart))
+                    {
+                        return $"PR{numberPart + 1:D3}";
+                    }
+                }
+
+                return "PR001";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error generating next product code, defaulting to PR001");
+                return "PR001";
+            }
         }
     }
 }
