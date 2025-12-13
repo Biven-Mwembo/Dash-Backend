@@ -32,25 +32,19 @@ namespace Pharma.Controllers
                 LowStockProducts = new List<Product>()
             };
 
-            // IMPROVEMENT: Run independent DB queries concurrently
             var salesTask = _supabase.From<Sale>().Get();
-            var lowStockTask = _supabase
-                .From<Product>()
-                .Where(p => p.Quantity <= 5)
-                .Get();
+            var lowStockTask = _supabase.From<Product>().Where(p => p.Quantity <= 5).Get();
 
             try
             {
-                // Wait for both tasks to complete simultaneously
                 await Task.WhenAll(salesTask, lowStockTask);
 
-                // --- 1. Process Sales Data for Most Selling Product ---
+                // Most Selling Product
                 var salesResponse = salesTask.Result;
                 var sales = salesResponse.Models ?? new List<Sale>();
 
                 if (sales.Any())
                 {
-                    // Find the ProductId with the highest total quantity sold
                     var mostSellingProductId = sales
                         .GroupBy(s => s.ProductId)
                         .OrderByDescending(g => g.Sum(s => s.QuantitySold))
@@ -61,39 +55,30 @@ namespace Pharma.Controllers
                     {
                         try
                         {
-                            // Fetch the corresponding product using the ID
-                            // FIX: Assuming .Single() returns the Product model directly
-                            var product = await _supabase
-                                .From<Product>()
+                            var product = await _supabase.From<Product>()
                                 .Where(p => p.Id == mostSellingProductId)
                                 .Single();
 
                             dashboardData.MostSellingProduct = product;
                         }
-                        catch (PostgrestException pe)
+                        catch (PostgrestException pe) when (pe.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
                         {
                             _logger.LogWarning(pe, "Most selling product not found for ID {ProductId}", mostSellingProductId);
                         }
+                        catch (PostgrestException pe)
+                        {
+                            _logger.LogError(pe, "Postgrest error fetching most selling product");
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                // Log and continue gracefully
-                _logger.LogError(ex, "Error retrieving sales data for dashboard (MostSellingProduct might be null)");
-            }
 
-            try
-            {
-                // --- 2. Process Low Stock Products ---
-                // Result is already ready from the Task.WhenAll call above
+                // Low Stock Products
                 var lowStockResponse = lowStockTask.Result;
                 dashboardData.LowStockProducts = lowStockResponse.Models ?? new List<Product>();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving low stock products");
-                // LowStockProducts remains empty list
+                _logger.LogError(ex, "Error retrieving dashboard data");
             }
 
             return Ok(dashboardData);
