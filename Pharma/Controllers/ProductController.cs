@@ -28,18 +28,20 @@ namespace Pharma.Controllers
         {
             try
             {
-                var products = await _supabase.From<Product>().Get();
-                var productDtos = (products.Models ?? new List<Product>()).Select(p => new ProductDto
-                {
-                    Id = p.Id,
-                    ProductCode = p.ProductCode,
-                    Name = p.Name,
-                    Quantity = p.Quantity,
-                    Price = p.Price,
-                    PrixAchat = p.PrixAchat,
-                    SupplierId = p.SupplierId,
-                    CreatedAt = p.CreatedAt
-                }).ToList();
+                var productsResponse = await _supabase.From<Product>().Get();
+                var productDtos = (productsResponse.Models ?? new List<Product>())
+                    .Select(p => new ProductDto
+                    {
+                        Id = p.Id,
+                        ProductCode = p.ProductCode,
+                        Name = p.Name,
+                        Quantity = p.Quantity,
+                        Price = p.Price,
+                        PrixAchat = p.PrixAchat,
+                        SupplierId = p.SupplierId,
+                        // FIX: CreatedAt is non-nullable DateTime, use directly
+                        CreatedAt = p.CreatedAt
+                    }).ToList();
 
                 return Ok(productDtos);
             }
@@ -60,6 +62,7 @@ namespace Pharma.Controllers
         {
             try
             {
+                // FIX: Assuming .Single() returns the Product model directly (as indicated by your error)
                 var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
                 if (product == null) return NotFound();
 
@@ -72,6 +75,7 @@ namespace Pharma.Controllers
                     Price = product.Price,
                     PrixAchat = product.PrixAchat,
                     SupplierId = product.SupplierId,
+                    // FIX: CreatedAt is non-nullable DateTime, use directly
                     CreatedAt = product.CreatedAt
                 };
                 return Ok(productDto);
@@ -115,6 +119,7 @@ namespace Pharma.Controllers
                     Price = createdProduct.Price,
                     PrixAchat = createdProduct.PrixAchat,
                     SupplierId = createdProduct.SupplierId,
+                    // FIX: CreatedAt is non-nullable DateTime, use directly
                     CreatedAt = createdProduct.CreatedAt
                 };
 
@@ -193,6 +198,7 @@ namespace Pharma.Controllers
         {
             try
             {
+                // FIX: Assuming .Single() returns the Product model directly
                 var product = await _supabase.From<Product>().Where(p => p.Id == id).Single();
                 if (product == null) return NotFound("Product not found.");
                 if (product.Quantity < quantitySold) return BadRequest("Insufficient stock.");
@@ -222,6 +228,7 @@ namespace Pharma.Controllers
             {
                 foreach (var item in saleItems)
                 {
+                    // FIX: Assuming .Single() returns the Product model directly
                     var product = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
                     if (product == null) return BadRequest($"Product {item.ProductId} not found.");
                     if (product.Quantity < item.QuantitySold) return BadRequest($"Insufficient stock for {product.Name}.");
@@ -255,12 +262,21 @@ namespace Pharma.Controllers
         {
             try
             {
-                var sales = await _supabase.From<Sale>().Get();
-                var products = await _supabase.From<Product>().Get();
+                // IMPROVEMENT: Run DB queries concurrently to speed up response time (Task.WhenAll)
+                var salesTask = _supabase.From<Sale>().Get();
+                var productsTask = _supabase.From<Product>().Get();
 
-                var salesWithDetails = (sales.Models ?? new List<Sale>()).Select(s =>
+                await Task.WhenAll(salesTask, productsTask);
+
+                var sales = salesTask.Result;
+                var products = productsTask.Result;
+
+                var productList = products.Models ?? new List<Product>();
+                var salesList = sales.Models ?? new List<Sale>();
+
+                var salesWithDetails = salesList.Select(s =>
                 {
-                    var product = products.Models?.FirstOrDefault(p => p.Id == s.ProductId);
+                    var product = productList.FirstOrDefault(p => p.Id == s.ProductId);
                     if (product == null) return null;
 
                     return new
@@ -269,6 +285,7 @@ namespace Pharma.Controllers
                         QuantitySold = s.QuantitySold,
                         PricePerItem = product.Price,
                         TotalAmount = product.Price * s.QuantitySold,
+                        // FIX: SaleDate is non-nullable DateTime, use directly
                         SaleDate = s.SaleDate
                     };
                 }).Where(s => s != null).ToList();
@@ -292,16 +309,26 @@ namespace Pharma.Controllers
         {
             try
             {
-                var sales = await _supabase.From<Sale>().Get();
-                var products = await _supabase.From<Product>().Get();
+                // IMPROVEMENT: Run DB queries concurrently to speed up response time (Task.WhenAll)
+                var salesTask = _supabase.From<Sale>().Get();
+                var productsTask = _supabase.From<Product>().Get();
 
-                var dailySales = (sales.Models ?? new List<Sale>())
+                await Task.WhenAll(salesTask, productsTask);
+
+                var sales = salesTask.Result;
+                var products = productsTask.Result;
+
+                var productList = products.Models ?? new List<Product>();
+                var salesList = sales.Models ?? new List<Sale>();
+
+                var dailySales = salesList
+                    // FIX: SaleDate is non-nullable DateTime, use .Date directly
                     .GroupBy(s => s.SaleDate.Date)
                     .Select(g =>
                     {
                         var totalAmount = g.Sum(s =>
                         {
-                            var product = products.Models?.FirstOrDefault(p => p.Id == s.ProductId);
+                            var product = productList.FirstOrDefault(p => p.Id == s.ProductId);
                             return product != null ? product.Price * s.QuantitySold : 0.0m;
                         });
 
@@ -343,7 +370,8 @@ namespace Pharma.Controllers
                 if (products.Models != null && products.Models.Any())
                 {
                     var lastCode = products.Models.First().ProductCode;
-                    if (int.TryParse(lastCode.Substring(2), out var numberPart))
+                    // IMPROVEMENT: Added null check for lastCode before Substring/TryParse
+                    if (lastCode != null && lastCode.Length > 2 && int.TryParse(lastCode.Substring(2), out var numberPart))
                     {
                         return $"PR{numberPart + 1:D3}";
                     }

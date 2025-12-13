@@ -5,6 +5,7 @@ using Pharma.Models;
 using Supabase;
 using Supabase.Postgrest.Exceptions;
 using Product = Pharma.Models.Product;
+using Sale = Pharma.Models.Sale;
 
 namespace Pharma.Controllers
 {
@@ -31,14 +32,25 @@ namespace Pharma.Controllers
                 LowStockProducts = new List<Product>()
             };
 
+            // IMPROVEMENT: Run independent DB queries concurrently
+            var salesTask = _supabase.From<Sale>().Get();
+            var lowStockTask = _supabase
+                .From<Product>()
+                .Where(p => p.Quantity <= 5)
+                .Get();
+
             try
             {
-                // Fetch sales data
-                var salesResponse = await _supabase.From<Sale>().Get();
+                // Wait for both tasks to complete simultaneously
+                await Task.WhenAll(salesTask, lowStockTask);
+
+                // --- 1. Process Sales Data for Most Selling Product ---
+                var salesResponse = salesTask.Result;
                 var sales = salesResponse.Models ?? new List<Sale>();
 
                 if (sales.Any())
                 {
+                    // Find the ProductId with the highest total quantity sold
                     var mostSellingProductId = sales
                         .GroupBy(s => s.ProductId)
                         .OrderByDescending(g => g.Sum(s => s.QuantitySold))
@@ -49,10 +61,14 @@ namespace Pharma.Controllers
                     {
                         try
                         {
-                            dashboardData.MostSellingProduct = await _supabase
+                            // Fetch the corresponding product using the ID
+                            // FIX: Assuming .Single() returns the Product model directly
+                            var product = await _supabase
                                 .From<Product>()
                                 .Where(p => p.Id == mostSellingProductId)
                                 .Single();
+
+                            dashboardData.MostSellingProduct = product;
                         }
                         catch (PostgrestException pe)
                         {
@@ -63,18 +79,15 @@ namespace Pharma.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving sales data");
-                // Continue to fetch low stock products even if sales fail
+                // Log and continue gracefully
+                _logger.LogError(ex, "Error retrieving sales data for dashboard (MostSellingProduct might be null)");
             }
 
             try
             {
-                // Fetch low stock products
-                var lowStockResponse = await _supabase
-                    .From<Product>()
-                    .Where(p => p.Quantity <= 5)
-                    .Get();
-
+                // --- 2. Process Low Stock Products ---
+                // Result is already ready from the Task.WhenAll call above
+                var lowStockResponse = lowStockTask.Result;
                 dashboardData.LowStockProducts = lowStockResponse.Models ?? new List<Product>();
             }
             catch (Exception ex)
