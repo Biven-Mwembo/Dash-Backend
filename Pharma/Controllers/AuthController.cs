@@ -1,7 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;  // ✅ Added for logging
+using Postgrest;
 using Supabase;
 using Supabase.Gotrue;
-using Postgrest;
 
 namespace Pharma.Controllers
 {
@@ -12,15 +13,19 @@ namespace Pharma.Controllers
     public class AuthController : ControllerBase
     {
         private readonly Supabase.Client _supabase;
+        private readonly ILogger<AuthController> _logger;  // ✅ Added logger for better error tracking
 
-        public AuthController(Supabase.Client supabase) =>
-            _supabase = supabase ?? throw new ArgumentNullException(nameof(supabase));
+        public AuthController(Supabase.Client supabase, ILogger<AuthController> logger) =>
+            (_supabase, _logger) = (supabase ?? throw new ArgumentNullException(nameof(supabase)), logger ?? throw new ArgumentNullException(nameof(logger)));
 
         [HttpPost("signup")]
         public async Task<IActionResult> SignUp([FromBody] SignUpRequest request)
         {
-            if (request.Email is null || request.Password is null || request.Name is null || request.Surname is null)
+            if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password) ||
+                string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Surname))
+            {
                 return BadRequest(new { success = false, message = "Email, Password, Name, and Surname are required." });
+            }
 
             try
             {
@@ -31,12 +36,12 @@ namespace Pharma.Controllers
                     {
                         Data = new Dictionary<string, object>
                         {
-                            { "name", request.Name ?? "" },
-                            { "surname", request.Surname ?? "" }
+                            { "name", request.Name },
+                            { "surname", request.Surname }
                         }
                     });
 
-                if (response.User != null)
+                if (response.User != null && !string.IsNullOrEmpty(response.AccessToken))
                 {
                     return Ok(new
                     {
@@ -55,34 +60,41 @@ namespace Pharma.Controllers
             }
             catch (Exception ex)
             {
-                // Handle user already exists error
-                if (ex.Message.Contains("user_already_exists"))
-                    return BadRequest(new { success = false, message = "User already registered. Please login instead." });
+                _logger.LogError(ex, "SignUp error for email: {Email}", request.Email);  // ✅ Added logging
 
-                Console.WriteLine($"SignUp error: {ex.Message}");
-                return BadRequest(new { success = false, message = $"SignUp failed: {ex.Message}" });
+                if (ex.Message.Contains("user_already_exists") || ex.Message.Contains("User already registered"))
+                {
+                    return Conflict(new { success = false, message = "User already registered. Please login instead." });  // ✅ Changed to 409 Conflict
+                }
+
+                return StatusCode(500, new { success = false, message = "SignUp failed due to server error." });
             }
         }
 
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
-            if (request.Email is null || request.Password is null)
+            if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
+            {
                 return BadRequest(new { success = false, message = "Email and Password are required." });
+            }
 
             try
             {
                 var response = await _supabase.Auth.SignInWithPassword(request.Email, request.Password);
 
-                if (response.User != null)
-                    return Ok(new { success = true, token = response.AccessToken });
+                if (response.User != null && !string.IsNullOrEmpty(response.AccessToken))
+                {
+                    return Ok(new { success = true, token = response.AccessToken, message = "Login successful." });
+                }
 
-                // Login failed
-                return BadRequest(new { success = false, message = "Login failed: invalid credentials" });
+                // Login failed (invalid credentials)
+                return Unauthorized(new { success = false, message = "Invalid email or password." });  // ✅ Changed to 401 Unauthorized
             }
             catch (Exception ex)
             {
-                return BadRequest(new { success = false, message = $"Login failed: {ex.Message}" });
+                _logger.LogError(ex, "Login error for email: {Email}", request.Email);  // ✅ Added logging
+                return StatusCode(500, new { success = false, message = "Login failed due to server error." });
             }
         }
     }

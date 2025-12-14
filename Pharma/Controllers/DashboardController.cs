@@ -32,11 +32,11 @@ namespace Pharma.Controllers
                 LowStockProducts = new List<Product>()
             };
 
-            var salesTask = _supabase.From<Sale>().Get();
-            var lowStockTask = _supabase.From<Product>().Where(p => p.Quantity <= 5).Get();
-
             try
             {
+                var salesTask = _supabase.From<Sale>().Get();
+                var lowStockTask = _supabase.From<Product>().Where(p => p.Quantity <= 5).Get();
+
                 await Task.WhenAll(salesTask, lowStockTask);
 
                 // Most Selling Product
@@ -51,7 +51,7 @@ namespace Pharma.Controllers
                         .Select(g => g.Key)
                         .FirstOrDefault();
 
-                    if (mostSellingProductId != 0)
+                    if (mostSellingProductId != 0)  // ✅ Assumes long ID; adjust if needed
                     {
                         try
                         {
@@ -67,21 +67,37 @@ namespace Pharma.Controllers
                         }
                         catch (PostgrestException pe)
                         {
-                            _logger.LogError(pe, "Postgrest error fetching most selling product");
+                            _logger.LogError(pe, "Postgrest error fetching most selling product: {Message}", pe.Message);
+                            return StatusCode(500, "Error fetching most selling product.");
                         }
                     }
+                    else
+                    {
+                        _logger.LogInformation("No valid most selling product ID found.");
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("No sales data available for most selling product calculation.");
                 }
 
                 // Low Stock Products
                 var lowStockResponse = lowStockTask.Result;
                 dashboardData.LowStockProducts = lowStockResponse.Models ?? new List<Product>();
+
+                _logger.LogInformation("Dashboard data retrieved successfully.");
+                return Ok(dashboardData);
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error retrieving dashboard data: {Message}", pe.Message);
+                return StatusCode(500, "Database error retrieving dashboard data.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving dashboard data");
+                _logger.LogError(ex, "Unexpected error retrieving dashboard data: {Message}", ex.Message);
+                return StatusCode(500, "Server error retrieving dashboard data.");
             }
-
-            return Ok(dashboardData);
         }
     }
 

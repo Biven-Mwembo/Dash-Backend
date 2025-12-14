@@ -28,6 +28,7 @@ namespace Pharma.Controllers
         {
             try
             {
+                _logger.LogInformation("Fetching all products for user.");
                 var productsResponse = await _supabase.From<Product>().Get();
                 var productDtos = (productsResponse.Models ?? new List<Product>())
                     .Select(p => new ProductDto
@@ -42,16 +43,17 @@ namespace Pharma.Controllers
                         CreatedAt = p.CreatedAt
                     }).ToList();
 
+                _logger.LogInformation("Fetched {Count} products successfully.", productDtos.Count);
                 return Ok(productDtos);
             }
             catch (PostgrestException pe)
             {
-                _logger.LogError(pe, "Postgrest error fetching products");
-                return StatusCode(500, "Error fetching products. Check logs.");
+                _logger.LogError(pe, "Postgrest error fetching products: {Message}", pe.Message);
+                return StatusCode(500, "Error fetching products. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error fetching products");
+                _logger.LogError(ex, "Unexpected error fetching products: {Message}", ex.Message);
                 return StatusCode(500, "Error fetching products. Check logs.");
             }
         }
@@ -59,8 +61,11 @@ namespace Pharma.Controllers
         [HttpGet("{id}")]
         public async Task<IActionResult> GetProduct(long id)
         {
+            if (id <= 0) return BadRequest("Invalid product ID.");
+
             try
             {
+                _logger.LogInformation("Fetching product with ID {Id}.", id);
                 Product product = null;
                 try
                 {
@@ -68,6 +73,7 @@ namespace Pharma.Controllers
                 }
                 catch (PostgrestException ex) when (ex.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
                 {
+                    _logger.LogWarning(ex, "Product with ID {Id} not found.", id);
                     return NotFound($"Product with ID {id} not found.");
                 }
 
@@ -83,11 +89,17 @@ namespace Pharma.Controllers
                     CreatedAt = product.CreatedAt
                 };
 
+                _logger.LogInformation("Fetched product {Id} successfully.", id);
                 return Ok(productDto);
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error retrieving product {Id}: {Message}", id, pe.Message);
+                return StatusCode(500, $"Error retrieving product {id}. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error retrieving product {Id}", id);
+                _logger.LogError(ex, "Unexpected error retrieving product {Id}: {Message}", id, ex.Message);
                 return StatusCode(500, $"Error retrieving product {id}. Check logs.");
             }
         }
@@ -95,8 +107,12 @@ namespace Pharma.Controllers
         [HttpPost]
         public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
         {
+            if (productDto == null || string.IsNullOrWhiteSpace(productDto.Name) || productDto.Quantity < 0)
+                return BadRequest("Invalid product data.");
+
             try
             {
+                _logger.LogInformation("Creating new product: {Name}", productDto.Name);
                 var product = new Product
                 {
                     ProductCode = !string.IsNullOrEmpty(productDto.ProductCode) ? productDto.ProductCode : await GenerateNextProductCode(),
@@ -122,21 +138,22 @@ namespace Pharma.Controllers
                     CreatedAt = createdProduct.CreatedAt
                 };
 
+                _logger.LogInformation("Created product {Id} successfully.", createdProduct.Id);
                 return Ok(resultDto);
             }
             catch (PostgrestException pe) when (pe.Message.Contains("violates row-level security policy"))
             {
-                _logger.LogWarning(pe, "RLS policy violation creating product");
+                _logger.LogWarning(pe, "RLS policy violation creating product: {Message}", pe.Message);
                 return StatusCode(403, "Permission denied: RLS violated.");
             }
             catch (PostgrestException pe)
             {
-                _logger.LogError(pe, "Postgrest error creating product");
-                return StatusCode(500, "Error creating product. Check logs.");
+                _logger.LogError(pe, "Postgrest error creating product: {Message}", pe.Message);
+                return StatusCode(500, "Error creating product. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error creating product");
+                _logger.LogError(ex, "Unexpected error creating product: {Message}", ex.Message);
                 return StatusCode(500, "Error creating product. Check logs.");
             }
         }
@@ -144,8 +161,12 @@ namespace Pharma.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto)
         {
+            if (id <= 0 || productDto == null || string.IsNullOrWhiteSpace(productDto.Name) || productDto.Quantity < 0)
+                return BadRequest("Invalid product ID or data.");
+
             try
             {
+                _logger.LogInformation("Updating product {Id}.", id);
                 var product = new Product
                 {
                     Id = id,
@@ -158,16 +179,17 @@ namespace Pharma.Controllers
                 };
 
                 await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
+                _logger.LogInformation("Updated product {Id} successfully.", id);
                 return Ok();
             }
             catch (PostgrestException pe)
             {
-                _logger.LogError(pe, "Postgrest error updating product {Id}", id);
-                return StatusCode(500, $"Error updating product {id}. Check logs.");
+                _logger.LogError(pe, "Postgrest error updating product {Id}: {Message}", id, pe.Message);
+                return StatusCode(500, $"Error updating product {id}. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error updating product {Id}", id);
+                _logger.LogError(ex, "Unexpected error updating product {Id}: {Message}", id, ex.Message);
                 return StatusCode(500, $"Error updating product {id}. Check logs.");
             }
         }
@@ -175,19 +197,23 @@ namespace Pharma.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteProduct(long id)
         {
+            if (id <= 0) return BadRequest("Invalid product ID.");
+
             try
             {
+                _logger.LogInformation("Deleting product {Id}.", id);
                 await _supabase.From<Product>().Where(p => p.Id == id).Delete();
+                _logger.LogInformation("Deleted product {Id} successfully.", id);
                 return Ok();
             }
             catch (PostgrestException pe)
             {
-                _logger.LogError(pe, "Postgrest error deleting product {Id}", id);
-                return StatusCode(500, $"Error deleting product {id}. Check logs.");
+                _logger.LogError(pe, "Postgrest error deleting product {Id}: {Message}", id, pe.Message);
+                return StatusCode(500, $"Error deleting product {id}. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error deleting product {Id}", id);
+                _logger.LogError(ex, "Unexpected error deleting product {Id}: {Message}", id, ex.Message);
                 return StatusCode(500, $"Error deleting product {id}. Check logs.");
             }
         }
@@ -198,6 +224,7 @@ namespace Pharma.Controllers
         {
             try
             {
+                _logger.LogInformation("Fetching product sales.");
                 var salesResponse = await _supabase.From<Sale>().Get();
                 var saleDtos = (salesResponse.Models ?? new List<Sale>())
                     .Select(s => new SaleDto
@@ -208,16 +235,17 @@ namespace Pharma.Controllers
                         SaleDate = s.SaleDate
                     }).ToList();
 
+                _logger.LogInformation("Fetched {Count} sales successfully.", saleDtos.Count);
                 return Ok(saleDtos);
             }
             catch (PostgrestException pe)
             {
-                _logger.LogError(pe, "Postgrest error fetching sales");
-                return StatusCode(500, "Error fetching sales. Check logs.");
+                _logger.LogError(pe, "Postgrest error fetching sales: {Message}", pe.Message);
+                return StatusCode(500, "Error fetching sales. Check database/logs.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error fetching sales");
+                _logger.LogError(ex, "Unexpected error fetching sales: {Message}", ex.Message);
                 return StatusCode(500, "Error fetching sales. Check logs.");
             }
         }
@@ -227,6 +255,7 @@ namespace Pharma.Controllers
         {
             try
             {
+                _logger.LogInformation("Generating next product code.");
                 var products = await _supabase.From<Product>()
                     .Where(p => p.ProductCode != null && p.ProductCode.StartsWith("PR"))
                     .Order(p => p.ProductCode, Supabase.Postgrest.Constants.Ordering.Descending)
@@ -246,7 +275,7 @@ namespace Pharma.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error generating next product code, defaulting to PR001");
+                _logger.LogWarning(ex, "Error generating next product code, defaulting to PR001: {Message}", ex.Message);
                 return "PR001";
             }
         }
