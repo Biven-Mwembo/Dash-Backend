@@ -1,4 +1,4 @@
-using Supabase;
+﻿using Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -35,7 +35,8 @@ builder.Services.AddSingleton<Supabase.Client>(sp =>
 // ---------------------------------------------------------
 // JWT Authentication for Supabase Auth tokens
 // ---------------------------------------------------------
-var keyBytes = Convert.FromBase64String(supabaseJwtSecret);
+// ✅ Updated: Use UTF-8 bytes for the JWT secret (try this if base64 decoding fails)
+var keyBytes = Encoding.UTF8.GetBytes(supabaseJwtSecret);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
