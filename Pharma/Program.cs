@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 // ---------------------------------------------------------
 var supabaseUrl = builder.Configuration["Supabase:Url"];
 var supabaseAnonKey = builder.Configuration["Supabase:AnonKey"];
+var supabaseServiceRoleKey = builder.Configuration["Supabase:ServiceRoleKey"];
 var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST match GoTrue JWT Secret
 
 // ---------------------------------------------------------
@@ -18,7 +19,7 @@ var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST mat
 builder.Services.AddControllers();
 
 // ---------------------------------------------------------
-// Supabase Client (public anon key only)
+// Supabase Client (public anon key only for user calls)
 // ---------------------------------------------------------
 builder.Services.AddSingleton<Supabase.Client>(sp =>
 {
@@ -34,6 +35,8 @@ builder.Services.AddSingleton<Supabase.Client>(sp =>
 // ---------------------------------------------------------
 // JWT Authentication for Supabase Auth tokens
 // ---------------------------------------------------------
+var keyBytes = Convert.FromBase64String(supabaseJwtSecret);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -48,7 +51,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateLifetime = true,
 
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(supabaseJwtSecret))
+            IssuerSigningKey = new SymmetricSecurityKey(keyBytes)
         };
     });
 
@@ -74,8 +77,6 @@ builder.Services.AddCors(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-
-
 var app = builder.Build();
 
 // ---------------------------------------------------------
@@ -88,27 +89,7 @@ if (app.Environment.IsDevelopment())
 }
 
 // ---------------------------------------------------------
-// FORCE CORS HEADERS (Render fix)
-// ---------------------------------------------------------
-app.Use(async (context, next) =>
-{
-    context.Response.Headers["Access-Control-Allow-Origin"] = "https://kinlight.netlify.app";
-    context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-    context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-    context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
-
-    // Handle preflight cleanly
-    if (context.Request.Method == "OPTIONS")
-    {
-        context.Response.StatusCode = 200;
-        return;
-    }
-
-    await next();
-});
-
-// ---------------------------------------------------------
-// Pipeline ordering (VERY IMPORTANT)
+// Pipeline ordering
 // ---------------------------------------------------------
 app.UseHttpsRedirection();
 app.UseCors("AllowReactApp");

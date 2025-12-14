@@ -192,6 +192,36 @@ namespace Pharma.Controllers
             }
         }
 
+        // New endpoint to handle GET /api/products/sales
+        [HttpGet("sales")]
+        public async Task<IActionResult> GetProductSales()
+        {
+            try
+            {
+                var salesResponse = await _supabase.From<Sale>().Get();
+                var saleDtos = (salesResponse.Models ?? new List<Sale>())
+                    .Select(s => new SaleDto
+                    {
+                        Id = s.Id,
+                        ProductId = s.ProductId,
+                        QuantitySold = s.QuantitySold,
+                        SaleDate = s.SaleDate
+                    }).ToList();
+
+                return Ok(saleDtos);
+            }
+            catch (PostgrestException pe)
+            {
+                _logger.LogError(pe, "Postgrest error fetching sales");
+                return StatusCode(500, "Error fetching sales. Check logs.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error fetching sales");
+                return StatusCode(500, "Error fetching sales. Check logs.");
+            }
+        }
+
         // ---------------- Helper ----------------
         private async Task<string> GenerateNextProductCode()
         {
@@ -220,5 +250,14 @@ namespace Pharma.Controllers
                 return "PR001";
             }
         }
+    }
+
+    // Inline DTO for sales (updated to match Sale model properties)
+    public class SaleDto
+    {
+        public int Id { get; set; }
+        public long ProductId { get; set; }
+        public int QuantitySold { get; set; }
+        public DateTime SaleDate { get; set; }
     }
 }
