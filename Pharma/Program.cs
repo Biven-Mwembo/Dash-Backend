@@ -59,13 +59,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 // ---------------------------------------------------------
-// CORS (must match EXACT frontend URL; moved up for early application)
+// CORS (temporary: allow any origin for testing)
 // ---------------------------------------------------------
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
     {
-        policy.WithOrigins("https://kinlight.netlify.app")
+        policy.AllowAnyOrigin()  // Temporary: allows all origins
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials(); // Required for JWT/auth
