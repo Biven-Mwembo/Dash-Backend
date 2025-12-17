@@ -59,7 +59,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 // ---------------------------------------------------------
-// CORS (must match EXACT frontend URL)
+// CORS (must match EXACT frontend URL; moved up for early application)
 // ---------------------------------------------------------
 builder.Services.AddCors(options =>
 {
@@ -68,7 +68,7 @@ builder.Services.AddCors(options =>
         policy.WithOrigins("https://kinlight.netlify.app")
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials();
+              .AllowCredentials(); // Required for JWT/auth
     });
 });
 
@@ -90,10 +90,10 @@ if (app.Environment.IsDevelopment())
 }
 
 // ---------------------------------------------------------
-// Pipeline ordering
+// Pipeline ordering (CORS applied early)
 // ---------------------------------------------------------
+app.UseCors("AllowReactApp"); // Moved before UseHttpsRedirection
 app.UseHttpsRedirection();
-app.UseCors("AllowReactApp");
 app.UseAuthentication();
 app.UseAuthorization();
 
