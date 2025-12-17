@@ -6,6 +6,7 @@ using Supabase;
 using Supabase.Postgrest.Exceptions;
 using Product = Pharma.Models.Product;
 using Sale = Pharma.Models.Sale;
+using User = Pharma.Models.User; // Assuming this model exists; add if needed
 
 namespace Pharma.Controllers
 {
@@ -23,9 +24,29 @@ namespace Pharma.Controllers
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
+        // Helper: Check if current user is admin
+        private async Task<bool> IsUserAdmin(string userId)
+        {
+            try
+            {
+                var user = await _supabase.From<User>().Where(u => u.Id == userId).Single();
+                return user?.Role == "admin"; // Adjust to 'IsAdmin' if boolean
+            }
+            catch
+            {
+                return false; // Deny if query fails
+            }
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetProducts()
         {
+            var userId = User.FindFirst("sub")?.Value; // JWT user ID
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             try
             {
                 _logger.LogInformation("Fetching all products for user.");
@@ -61,6 +82,12 @@ namespace Pharma.Controllers
         [HttpGet("{id}")]
         public async Task<IActionResult> GetProduct(long id)
         {
+            var userId = User.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             if (id <= 0) return BadRequest("Invalid product ID.");
 
             try
@@ -107,6 +134,12 @@ namespace Pharma.Controllers
         [HttpPost]
         public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
         {
+            var userId = User.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             if (productDto == null || string.IsNullOrWhiteSpace(productDto.Name) || productDto.Quantity < 0)
                 return BadRequest("Invalid product data.");
 
@@ -161,6 +194,12 @@ namespace Pharma.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto)
         {
+            var userId = User.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             if (id <= 0 || productDto == null || string.IsNullOrWhiteSpace(productDto.Name) || productDto.Quantity < 0)
                 return BadRequest("Invalid product ID or data.");
 
@@ -197,6 +236,12 @@ namespace Pharma.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteProduct(long id)
         {
+            var userId = User.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             if (id <= 0) return BadRequest("Invalid product ID.");
 
             try
@@ -218,10 +263,15 @@ namespace Pharma.Controllers
             }
         }
 
-        // New endpoint to handle GET /api/products/sales
         [HttpGet("sales")]
         public async Task<IActionResult> GetProductSales()
         {
+            var userId = User.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(userId) || !await IsUserAdmin(userId))
+            {
+                return Forbid("Admin access required.");
+            }
+
             try
             {
                 _logger.LogInformation("Fetching product sales.");
