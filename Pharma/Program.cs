@@ -11,7 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 var supabaseUrl = builder.Configuration["Supabase:Url"];
 var supabaseAnonKey = builder.Configuration["Supabase:AnonKey"];
 var supabaseServiceRoleKey = builder.Configuration["Supabase:ServiceRoleKey"];
-var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST match GoTrue JWT Secret
+var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // Must match GoTrue JWT Secret
 
 // ---------------------------------------------------------
 // Controllers
@@ -19,7 +19,7 @@ var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST mat
 builder.Services.AddControllers();
 
 // ---------------------------------------------------------
-// Supabase Client (public anon key only for user calls)
+// Supabase Client (public anon key only)
 // ---------------------------------------------------------
 builder.Services.AddSingleton<Supabase.Client>(sp =>
 {
@@ -33,9 +33,8 @@ builder.Services.AddSingleton<Supabase.Client>(sp =>
 });
 
 // ---------------------------------------------------------
-// JWT Authentication for Supabase Auth tokens
+// JWT Authentication (Supabase Auth)
 // ---------------------------------------------------------
-// ✅ Updated: Use UTF-8 bytes for the JWT secret (try this if base64 decoding fails)
 var keyBytes = Encoding.UTF8.GetBytes(supabaseJwtSecret);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -59,21 +58,22 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 // ---------------------------------------------------------
-// CORS (must match EXACT frontend URL; moved up for early application)
+// CORS (Netlify frontend)
 // ---------------------------------------------------------
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
     {
-        policy.WithOrigins("https://kinlight.netlify.app")
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials(); // Required for JWT/auth
+        policy
+            .WithOrigins("https://kinlight.netlify.app")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+        // No AllowCredentials — using Bearer tokens
     });
 });
 
 // ---------------------------------------------------------
-// Swagger
+// Swagger (Dev only)
 // ---------------------------------------------------------
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -87,16 +87,25 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+    app.UseHttpsRedirection(); // Safe locally only
 }
 
 // ---------------------------------------------------------
-// Pipeline ordering (CORS applied early)
+// Pipeline order (CRITICAL)
 // ---------------------------------------------------------
-app.UseCors("AllowReactApp"); // Moved before UseHttpsRedirection
-app.UseHttpsRedirection();
+app.UseCors("AllowReactApp");     // MUST be first
+
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ---------------------------------------------------------
+// Allow preflight OPTIONS requests (CORS hardening)
+// ---------------------------------------------------------
+app.MapMethods("{*path}", new[] { "OPTIONS" }, () => Results.Ok());
+
+// ---------------------------------------------------------
+// Controllers
+// ---------------------------------------------------------
 app.MapControllers();
 
 app.Run();
