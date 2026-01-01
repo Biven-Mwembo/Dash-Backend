@@ -11,7 +11,7 @@ namespace Pharma.Controllers
 {
     [ApiController]
     [Route("api/dashboard")]
-    [Authorize]
+    [Authorize] // Requires a valid Supabase login token
     public class DashboardController : ControllerBase
     {
         private readonly Supabase.Client _supabase;
@@ -34,12 +34,15 @@ namespace Pharma.Controllers
 
             try
             {
+                _logger.LogInformation("Fetching dashboard data for authenticated user.");
+
+                // Run both queries in parallel for better performance
                 var salesTask = _supabase.From<Sale>().Get();
                 var lowStockTask = _supabase.From<Product>().Where(p => p.Quantity <= 5).Get();
 
                 await Task.WhenAll(salesTask, lowStockTask);
 
-                // Most Selling Product
+                // 1. Process Most Selling Product
                 var salesResponse = salesTask.Result;
                 var sales = salesResponse.Models ?? new List<Sale>();
 
@@ -51,10 +54,11 @@ namespace Pharma.Controllers
                         .Select(g => g.Key)
                         .FirstOrDefault();
 
-                    if (mostSellingProductId != 0)  // ✅ Assumes long ID; adjust if needed
+                    if (mostSellingProductId != 0)
                     {
                         try
                         {
+                            // Fetch the actual product details for the top seller
                             var product = await _supabase.From<Product>()
                                 .Where(p => p.Id == mostSellingProductId)
                                 .Single();
@@ -63,40 +67,21 @@ namespace Pharma.Controllers
                         }
                         catch (PostgrestException pe) when (pe.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
                         {
-                            _logger.LogWarning(pe, "Most selling product not found for ID {ProductId}", mostSellingProductId);
-                        }
-                        catch (PostgrestException pe)
-                        {
-                            _logger.LogError(pe, "Postgrest error fetching most selling product: {Message}", pe.Message);
-                            return StatusCode(500, "Error fetching most selling product.");
+                            _logger.LogWarning("Top product ID {Id} not found in products table.", mostSellingProductId);
                         }
                     }
-                    else
-                    {
-                        _logger.LogInformation("No valid most selling product ID found.");
-                    }
-                }
-                else
-                {
-                    _logger.LogInformation("No sales data available for most selling product calculation.");
                 }
 
-                // Low Stock Products
+                // 2. Process Low Stock Products
                 var lowStockResponse = lowStockTask.Result;
                 dashboardData.LowStockProducts = lowStockResponse.Models ?? new List<Product>();
 
-                _logger.LogInformation("Dashboard data retrieved successfully.");
                 return Ok(dashboardData);
-            }
-            catch (PostgrestException pe)
-            {
-                _logger.LogError(pe, "Postgrest error retrieving dashboard data: {Message}", pe.Message);
-                return StatusCode(500, "Database error retrieving dashboard data.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error retrieving dashboard data: {Message}", ex.Message);
-                return StatusCode(500, "Server error retrieving dashboard data.");
+                _logger.LogError(ex, "Unexpected error retrieving dashboard data.");
+                return StatusCode(500, "Internal server error fetching dashboard stats.");
             }
         }
     }
