@@ -6,21 +6,18 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 
 // ---------------------------------------------------------
-// Load Supabase settings
+// 1. Load Supabase settings
 // ---------------------------------------------------------
 var supabaseUrl = builder.Configuration["Supabase:Url"];
 var supabaseAnonKey = builder.Configuration["Supabase:AnonKey"];
-var supabaseServiceRoleKey = builder.Configuration["Supabase:ServiceRoleKey"];
-var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"]; // MUST match GoTrue JWT Secret
+var supabaseJwtSecret = builder.Configuration["Supabase:JwtSecret"];
 
 // ---------------------------------------------------------
-// Controllers
+// 2. Services Configuration
 // ---------------------------------------------------------
 builder.Services.AddControllers();
 
-// ---------------------------------------------------------
-// Supabase Client (public anon key only for user calls)
-// ---------------------------------------------------------
+// Supabase Client
 builder.Services.AddSingleton<Supabase.Client>(sp =>
 {
     var options = new Supabase.SupabaseOptions
@@ -28,15 +25,24 @@ builder.Services.AddSingleton<Supabase.Client>(sp =>
         AutoRefreshToken = true,
         AutoConnectRealtime = false
     };
-
     return new Supabase.Client(supabaseUrl, supabaseAnonKey, options);
 });
 
-// ---------------------------------------------------------
-// JWT Authentication for Supabase Auth tokens
-// ---------------------------------------------------------
-// ✅ Updated: Use UTF-8 bytes for the JWT secret (try this if base64 decoding fails)
-var keyBytes = Encoding.UTF8.GetBytes(supabaseJwtSecret);
+// CORS Configuration
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactApp", policy =>
+    {
+        policy.WithOrigins("https://kinlight.netlify.app") // No trailing slash
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
+
+// JWT Authentication for Supabase
+// NOTE: Supabase dashboard secrets are Base64. We convert them here.
+var keyBytes = Convert.FromBase64String(supabaseJwtSecret);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -45,59 +51,44 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         {
             ValidateIssuer = true,
             ValidIssuer = $"{supabaseUrl}/auth/v1",
-
             ValidateAudience = true,
             ValidAudience = "authenticated",
-
             ValidateLifetime = true,
-
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(keyBytes)
         };
     });
 
 builder.Services.AddAuthorization();
-
-// ---------------------------------------------------------
-// CORS (must match EXACT frontend URL; moved up for early application)
-// ---------------------------------------------------------
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("AllowReactApp", policy =>
-    {
-        policy.WithOrigins("https://kinlight.netlify.app")
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials(); // Required for JWT/auth
-    });
-});
-
-// ---------------------------------------------------------
-// Swagger
-// ---------------------------------------------------------
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
 // ---------------------------------------------------------
-// Development tools
+// 3. Middleware Pipeline (ORDER IS CRITICAL)
 // ---------------------------------------------------------
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// ---------------------------------------------------------
-// Pipeline ordering (CORS applied early, with routing added)
-// ---------------------------------------------------------
-app.UseRouting();  // ✅ Added: Required for routing to work with controllers and CORS
-app.UseCors("AllowReactApp");  // Now applied after routing
+// 1. First, redirect to HTTPS
 app.UseHttpsRedirection();
+
+// 2. Establish Routing
+app.UseRouting();
+
+// 3. CORS MUST be after UseRouting and BEFORE UseAuthentication
+app.UseCors("AllowReactApp");
+
+// 4. Security Middlewares
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 5. Final Step: Map Endpoints
 app.MapControllers();
 
 app.Run();
