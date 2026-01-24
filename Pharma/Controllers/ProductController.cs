@@ -1,9 +1,11 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Pharma.Models;
 using Supabase;
 using Supabase.Postgrest.Exceptions;
+using System.Security.Claims;
+
+// Aliases to avoid conflicts with built-in classes
 using Product = Pharma.Models.Product;
 using Sale = Pharma.Models.Sale;
 using User = Pharma.Models.User;
@@ -27,12 +29,15 @@ namespace Pharma.Controllers
         // --- Helper: Check if current user is admin ---
         private async Task<bool> IsUserAdmin()
         {
-            var userId = User.FindFirst("sub")?.Value;
+            // Gets the UUID string from the 'sub' claim in the JWT
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                         ?? User.FindFirst("sub")?.Value;
+
             if (string.IsNullOrEmpty(userId)) return false;
 
             try
             {
-                // Note: Ensure your 'User' table in Supabase allows authenticated users to read roles
+                // Matches your Model: Id is a string (UUID)
                 var user = await _supabase.From<User>().Where(u => u.Id == userId).Single();
                 return user?.Role?.ToLower() == "admin";
             }
@@ -84,7 +89,7 @@ namespace Pharma.Controllers
                 var saleDtos = (salesResponse.Models ?? new List<Sale>())
                     .Select(s => new SaleDto
                     {
-                        Id = (int)s.Id,
+                        Id = s.Id,
                         ProductId = s.ProductId,
                         QuantitySold = s.QuantitySold,
                         SaleDate = s.SaleDate
@@ -99,11 +104,40 @@ namespace Pharma.Controllers
             }
         }
 
+        // GET: api/products/sales/daily
+        [HttpGet("sales/daily")]
+        public async Task<IActionResult> GetDailySales()
+        {
+            try
+            {
+                _logger.LogInformation("Fetching daily sales statistics.");
+                var response = await _supabase.From<Sale>().Get();
+                var sales = response.Models ?? new List<Sale>();
+
+                var dailyTotals = sales
+                    .GroupBy(s => s.SaleDate.Date)
+                    .Select(g => new
+                    {
+                        Date = g.Key.ToString("yyyy-MM-dd"),
+                        Count = g.Sum(s => s.QuantitySold)
+                    })
+                    .OrderBy(x => x.Date)
+                    .ToList();
+
+                return Ok(dailyTotals);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in GetDailySales.");
+                return StatusCode(500, "Error fetching daily statistics.");
+            }
+        }
+
         // POST: api/products
         [HttpPost]
         public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
         {
-            if (!await IsUserAdmin()) return Forbid("Seuls les administrateurs peuvent ajouter des produits.");
+            if (!await IsUserAdmin()) return Forbid();
 
             try
             {
@@ -127,12 +161,44 @@ namespace Pharma.Controllers
             }
         }
 
-        // PUT: api/products/{id}
+        // POST: api/products/sale
+        [HttpPost("sale")]
+        public async Task<IActionResult> ProcessSale([FromBody] List<SaleItemDto> items)
+        {
+            if (items == null || !items.Any()) return BadRequest("Panier vide.");
+
+            try
+            {
+                foreach (var item in items)
+                {
+                    var productResponse = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
+                    if (productResponse == null) return NotFound($"Produit {item.ProductId} non trouvé.");
+                    if (productResponse.Quantity < item.QuantitySold) return BadRequest($"Stock insuffisant pour {productResponse.Name}.");
+
+                    productResponse.Quantity -= item.QuantitySold;
+                    await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Update(productResponse);
+
+                    var saleRecord = new Sale
+                    {
+                        ProductId = item.ProductId,
+                        QuantitySold = item.QuantitySold,
+                        SaleDate = DateTime.UtcNow
+                    };
+                    await _supabase.From<Sale>().Insert(saleRecord);
+                }
+                return Ok(new { message = "Vente réussie." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Sale process error.");
+                return StatusCode(500, "Internal Server Error.");
+            }
+        }
+
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto)
         {
-            if (!await IsUserAdmin()) return Forbid("Seuls les administrateurs peuvent modifier les produits.");
-
+            if (!await IsUserAdmin()) return Forbid();
             try
             {
                 var product = new Product
@@ -145,41 +211,29 @@ namespace Pharma.Controllers
                     PrixAchat = productDto.PrixAchat,
                     SupplierId = productDto.SupplierId
                 };
-
                 await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
                 return Ok();
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Update error.");
-                return StatusCode(500, "Update failed.");
-            }
+            catch (Exception ex) { return StatusCode(500, ex.Message); }
         }
 
-        // DELETE: api/products/{id}
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteProduct(long id)
         {
-            if (!await IsUserAdmin()) return Forbid("Seuls les administrateurs peuvent supprimer des produits.");
-
+            if (!await IsUserAdmin()) return Forbid();
             try
             {
                 await _supabase.From<Product>().Where(p => p.Id == id).Delete();
                 return Ok();
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Delete error.");
-                return StatusCode(500, "Delete failed.");
-            }
+            catch (Exception ex) { return StatusCode(500, ex.Message); }
         }
 
         private async Task<string> GenerateNextProductCode()
         {
             var products = await _supabase.From<Product>()
                 .Order(p => p.ProductCode, Supabase.Postgrest.Constants.Ordering.Descending)
-                .Limit(1)
-                .Get();
+                .Limit(1).Get();
 
             if (products.Models.Any())
             {
@@ -191,77 +245,9 @@ namespace Pharma.Controllers
             }
             return "PR001";
         }
-        // POST: api/products/sale
-        [HttpPost("sale")]
-        public async Task<IActionResult> ProcessSale([FromBody] List<SaleItemDto> items)
-        {
-            // 1. Basic Validation
-            if (items == null || !items.Any())
-            {
-                return BadRequest("Le panier est vide.");
-            }
-
-            try
-            {
-                _logger.LogInformation("Traitement d'une vente de {Count} articles.", items.Count);
-
-                foreach (var item in items)
-                {
-                    // 2. Fetch the current product from Supabase to check stock
-                    var productResponse = await _supabase
-                        .From<Product>()
-                        .Where(p => p.Id == item.ProductId)
-                        .Single();
-
-                    if (productResponse == null)
-                    {
-                        _logger.LogWarning("Produit ID {Id} non trouvé lors de la vente.", item.ProductId);
-                        return NotFound($"Le produit avec l'ID {item.ProductId} n'existe pas.");
-                    }
-
-                    // 3. Verify stock availability
-                    if (productResponse.Quantity < item.QuantitySold)
-                    {
-                        return BadRequest($"Stock insuffisant pour {productResponse.Name}. Disponible: {productResponse.Quantity}, Demandé: {item.QuantitySold}");
-                    }
-
-                    // 4. Update the inventory (Decrement quantity)
-                    productResponse.Quantity -= item.QuantitySold;
-
-                    // We use .Update to save the new quantity back to the 'products' table
-                    await _supabase
-                        .From<Product>()
-                        .Where(p => p.Id == item.ProductId)
-                        .Update(productResponse);
-
-                    // 5. Record the transaction in the 'sales' table
-                    var saleRecord = new Sale
-                    {
-                        ProductId = item.ProductId,
-                        QuantitySold = item.QuantitySold,
-                        SaleDate = DateTime.UtcNow // Managed by your model default, but good to be explicit
-                    };
-
-                    await _supabase
-                        .From<Sale>()
-                        .Insert(saleRecord);
-                }
-
-                return Ok(new { message = "Vente réussie et stock mis à jour." });
-            }
-            catch (PostgrestException ex)
-            {
-                _logger.LogError(ex, "Erreur de base de données Supabase lors de la vente.");
-                return StatusCode(500, $"Erreur SQL: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Erreur inattendue lors du traitement de la vente.");
-                return StatusCode(500, "Une erreur interne est survenue sur le serveur.");
-            }
-        }
     }
 
+    // --- Added missing DTO to fix compilation error ---
     public class SaleDto
     {
         public int Id { get; set; }
