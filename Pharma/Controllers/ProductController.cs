@@ -191,6 +191,75 @@ namespace Pharma.Controllers
             }
             return "PR001";
         }
+        // POST: api/products/sale
+        [HttpPost("sale")]
+        public async Task<IActionResult> ProcessSale([FromBody] List<SaleItemDto> items)
+        {
+            // 1. Basic Validation
+            if (items == null || !items.Any())
+            {
+                return BadRequest("Le panier est vide.");
+            }
+
+            try
+            {
+                _logger.LogInformation("Traitement d'une vente de {Count} articles.", items.Count);
+
+                foreach (var item in items)
+                {
+                    // 2. Fetch the current product from Supabase to check stock
+                    var productResponse = await _supabase
+                        .From<Product>()
+                        .Where(p => p.Id == item.ProductId)
+                        .Single();
+
+                    if (productResponse == null)
+                    {
+                        _logger.LogWarning("Produit ID {Id} non trouvé lors de la vente.", item.ProductId);
+                        return NotFound($"Le produit avec l'ID {item.ProductId} n'existe pas.");
+                    }
+
+                    // 3. Verify stock availability
+                    if (productResponse.Quantity < item.QuantitySold)
+                    {
+                        return BadRequest($"Stock insuffisant pour {productResponse.Name}. Disponible: {productResponse.Quantity}, Demandé: {item.QuantitySold}");
+                    }
+
+                    // 4. Update the inventory (Decrement quantity)
+                    productResponse.Quantity -= item.QuantitySold;
+
+                    // We use .Update to save the new quantity back to the 'products' table
+                    await _supabase
+                        .From<Product>()
+                        .Where(p => p.Id == item.ProductId)
+                        .Update(productResponse);
+
+                    // 5. Record the transaction in the 'sales' table
+                    var saleRecord = new Sale
+                    {
+                        ProductId = item.ProductId,
+                        QuantitySold = item.QuantitySold,
+                        SaleDate = DateTime.UtcNow // Managed by your model default, but good to be explicit
+                    };
+
+                    await _supabase
+                        .From<Sale>()
+                        .Insert(saleRecord);
+                }
+
+                return Ok(new { message = "Vente réussie et stock mis à jour." });
+            }
+            catch (PostgrestException ex)
+            {
+                _logger.LogError(ex, "Erreur de base de données Supabase lors de la vente.");
+                return StatusCode(500, $"Erreur SQL: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur inattendue lors du traitement de la vente.");
+                return StatusCode(500, "Une erreur interne est survenue sur le serveur.");
+            }
+        }
     }
 
     public class SaleDto
