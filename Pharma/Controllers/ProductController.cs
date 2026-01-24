@@ -5,10 +5,6 @@ using Supabase;
 using System.Security.Claims;
 using Supabase.Postgrest.Exceptions;
 
-using Product = Pharma.Models.Product;
-using Sale = Pharma.Models.Sale;
-using User = Pharma.Models.User;
-
 namespace Pharma.Controllers
 {
     [ApiController]
@@ -18,56 +14,97 @@ namespace Pharma.Controllers
     {
         private readonly Supabase.Client _supabase;
         private readonly ILogger<ProductsController> _logger;
+        private readonly IConfiguration _configuration;
 
-        public ProductsController(Supabase.Client supabase, ILogger<ProductsController> logger)
+        public ProductsController(Supabase.Client supabase, ILogger<ProductsController> logger, IConfiguration configuration)
         {
             _supabase = supabase ?? throw new ArgumentNullException(nameof(supabase));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         }
 
-        private async Task<bool> IsUserAdmin()
+        /// <summary>
+        /// Extract user ID from JWT token
+        /// </summary>
+        private string? GetCurrentUserId()
         {
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                         ?? User.FindFirst("sub")?.Value;
-
-            if (string.IsNullOrEmpty(userId))
-            {
-                _logger.LogWarning("No user ID found in token claims");
-                return false;
-            }
-
             try
             {
-                var result = await _supabase.From<User>()
-                    .Where(u => u.Id == userId)
-                    .Get();
+                var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                          ?? User.FindFirst("user_id")?.Value
+                          ?? User.FindFirst("sub")?.Value;
 
-                var userRecord = result.Models?.FirstOrDefault();
-
-                if (userRecord == null)
-                {
-                    _logger.LogWarning("User {UserId} not found in database", userId);
-                    return false;
-                }
-
-                return userRecord.Role?.ToLower() == "admin";
+                return userId;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Admin check failed for User {UserId}", userId);
+                _logger.LogError(ex, "Error extracting user ID from token");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Check if current user has admin role
+        /// </summary>
+        private bool IsUserAdmin()
+        {
+            try
+            {
+                var roleClaim = User.FindFirst(ClaimTypes.Role)?.Value
+                             ?? User.FindFirst("role")?.Value;
+
+                var userId = GetCurrentUserId();
+
+                _logger.LogDebug("Checking admin status for user {UserId}. Role claim: {Role}",
+                    userId ?? "unknown", roleClaim ?? "null");
+
+                return roleClaim?.ToLower() == "admin";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking admin status");
                 return false;
             }
         }
 
         /// <summary>
-        /// GET: api/products - Retrieve all products
+        /// Check if user is authenticated (any role)
+        /// </summary>
+        private bool IsAuthenticated()
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                var isAuthenticated = User?.Identity?.IsAuthenticated ?? false;
+
+                _logger.LogDebug("Authentication check. User ID: {UserId}, IsAuthenticated: {IsAuthenticated}",
+                    userId ?? "unknown", isAuthenticated);
+
+                return isAuthenticated && !string.IsNullOrEmpty(userId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking authentication status");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// GET: api/products - Retrieve all products (All authenticated users)
         /// </summary>
         [HttpGet]
         public async Task<IActionResult> GetProducts()
         {
             try
             {
-                _logger.LogInformation("Fetching all products");
+                if (!IsAuthenticated())
+                {
+                    _logger.LogWarning("Unauthenticated user attempted to access products");
+                    return Unauthorized(new { message = "Authentication required" });
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("User {UserId} fetching all products", userId);
 
                 var response = await _supabase.From<Product>()
                     .Order(p => p.CreatedAt, Supabase.Postgrest.Constants.Ordering.Descending)
@@ -75,14 +112,22 @@ namespace Pharma.Controllers
 
                 var products = response.Models ?? new List<Product>();
 
-                _logger.LogInformation("Successfully fetched {Count} products", products.Count);
+                _logger.LogInformation("Successfully fetched {Count} products for user {UserId}",
+                    products.Count, userId);
 
                 return Ok(products);
             }
             catch (PostgrestException pex)
             {
-                _logger.LogError(pex, "Postgrest error fetching products: {Message}", pex.Message);
-                return StatusCode(500, new { message = "Database error fetching products", detail = pex.Message });
+                _logger.LogError(pex, "PostgreSQL error fetching products: {Message}", pex.Message);
+           
+
+                return StatusCode(500, new
+                {
+                    message = "Database error fetching products",
+                    detail = pex.Message,
+                    hint = "Check RLS policies on products table in Supabase"
+                });
             }
             catch (Exception ex)
             {
@@ -92,14 +137,21 @@ namespace Pharma.Controllers
         }
 
         /// <summary>
-        /// GET: api/products/{id} - Get single product
+        /// GET: api/products/{id} - Get single product (All authenticated users)
         /// </summary>
         [HttpGet("{id}")]
         public async Task<IActionResult> GetProduct(long id)
         {
             try
             {
-                _logger.LogInformation("Fetching product {ProductId}", id);
+                if (!IsAuthenticated())
+                {
+                    _logger.LogWarning("Unauthenticated user attempted to access product {ProductId}", id);
+                    return Unauthorized(new { message = "Authentication required" });
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("User {UserId} fetching product {ProductId}", userId, id);
 
                 var response = await _supabase.From<Product>()
                     .Where(p => p.Id == id)
@@ -113,6 +165,11 @@ namespace Pharma.Controllers
 
                 return Ok(response);
             }
+            catch (PostgrestException pex)
+            {
+                _logger.LogError(pex, "PostgreSQL error fetching product {ProductId}: {Message}", id, pex.Message);
+                return StatusCode(500, new { message = "Database error", detail = pex.Message });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching product {ProductId}", id);
@@ -121,14 +178,76 @@ namespace Pharma.Controllers
         }
 
         /// <summary>
-        /// GET: api/products/sales/daily - Get daily sales statistics
+        /// GET: api/products/sales - Get all sales (Admin only)
+        /// </summary>
+        [HttpGet("sales")]
+        public async Task<IActionResult> GetAllSales()
+        {
+            try
+            {
+                if (!IsUserAdmin())
+                {
+                    _logger.LogWarning("Non-admin user attempted to access all sales");
+                    return Forbid();
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("Admin {UserId} fetching all sales", userId);
+
+                var salesResponse = await _supabase.From<Sale>().Get();
+                var sales = salesResponse.Models ?? new List<Sale>();
+
+                var productsResponse = await _supabase.From<Product>().Get();
+                var products = productsResponse.Models ?? new List<Product>();
+
+                // Map sales with product information
+                var salesWithDetails = sales.Select(sale => {
+                    var product = products.FirstOrDefault(p => p.Id == sale.ProductId);
+                    return new
+                    {
+                        id = sale.Id,
+                        productId = sale.ProductId,
+                        productName = product?.Name ?? $"Product #{sale.ProductId}",
+                        quantitySold = sale.QuantitySold,
+                        pricePerItem = product?.Price ?? 0,
+                        totalAmount = sale.QuantitySold * (product?.Price ?? 0),
+                        saleDate = sale.SaleDate
+                    };
+                }).OrderByDescending(s => s.saleDate);
+
+                _logger.LogInformation("Successfully fetched {Count} sales for admin {UserId}",
+                    salesWithDetails.Count(), userId);
+
+                return Ok(salesWithDetails);
+            }
+            catch (PostgrestException pex)
+            {
+                _logger.LogError(pex, "PostgreSQL error fetching sales: {Message}", pex.Message);
+                return StatusCode(500, new { message = "Database error fetching sales", detail = pex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching all sales");
+                return StatusCode(500, new { message = "Error fetching sales", detail = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// GET: api/products/sales/daily - Get daily sales statistics (All authenticated users)
         /// </summary>
         [HttpGet("sales/daily")]
         public async Task<IActionResult> GetDailySales()
         {
             try
             {
-                _logger.LogInformation("Fetching daily sales data");
+                if (!IsAuthenticated())
+                {
+                    _logger.LogWarning("Unauthenticated user attempted to access daily sales");
+                    return Unauthorized(new { message = "Authentication required" });
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("User {UserId} fetching daily sales data", userId);
 
                 var response = await _supabase.From<Sale>().Get();
                 var sales = response.Models ?? new List<Sale>();
@@ -144,9 +263,15 @@ namespace Pharma.Controllers
                     .OrderBy(x => x.Date)
                     .ToList();
 
-                _logger.LogInformation("Successfully compiled {Count} days of sales data", dailyTotals.Count);
+                _logger.LogInformation("Successfully compiled {Count} days of sales data for user {UserId}",
+                    dailyTotals.Count, userId);
 
                 return Ok(dailyTotals);
+            }
+            catch (PostgrestException pex)
+            {
+                _logger.LogError(pex, "PostgreSQL error fetching daily sales: {Message}", pex.Message);
+                return StatusCode(500, new { message = "Database error", detail = pex.Message });
             }
             catch (Exception ex)
             {
@@ -163,12 +288,14 @@ namespace Pharma.Controllers
         {
             if (!ModelState.IsValid)
             {
+                _logger.LogWarning("Invalid model state for product creation");
                 return BadRequest(ModelState);
             }
 
-            if (!await IsUserAdmin())
+            if (!IsUserAdmin())
             {
-                _logger.LogWarning("Non-admin user attempted to create product");
+                var userId = GetCurrentUserId();
+                _logger.LogWarning("Non-admin user {UserId} attempted to create product", userId);
                 return Forbid();
             }
 
@@ -189,24 +316,35 @@ namespace Pharma.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
 
-                _logger.LogInformation("Creating product with code {ProductCode}", productCode);
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("Admin {UserId} creating product with code {ProductCode}",
+                    userId, productCode);
 
                 var response = await _supabase.From<Product>().Insert(product);
                 var createdProduct = response.Models?.FirstOrDefault();
 
                 if (createdProduct == null)
                 {
-                    _logger.LogError("Product creation returned null");
+                    _logger.LogError("Product creation returned null for admin {UserId}", userId);
                     return StatusCode(500, new { message = "Failed to create product" });
                 }
 
-                _logger.LogInformation("Successfully created product {ProductId}", createdProduct.Id);
+                _logger.LogInformation("Successfully created product {ProductId} by admin {UserId}",
+                    createdProduct.Id, userId);
 
                 return CreatedAtAction(nameof(GetProduct), new { id = createdProduct.Id }, createdProduct);
             }
             catch (PostgrestException pex)
             {
-                _logger.LogError(pex, "Database error creating product: {Message}", pex.Message);
+                _logger.LogError(pex, "PostgreSQL error creating product: {Message}", pex.Message);
+                
+
+                // Check for unique constraint violation
+                if (pex.Message.Contains("23505") || pex.Message.ToLower().Contains("unique"))
+                {
+                    return BadRequest(new { message = "Product with this code already exists", detail = pex.Message });
+                }
+
                 return StatusCode(500, new { message = "Database error", detail = pex.Message });
             }
             catch (Exception ex)
@@ -227,15 +365,16 @@ namespace Pharma.Controllers
                 return BadRequest(ModelState);
             }
 
-            if (!await IsUserAdmin())
+            if (!IsUserAdmin())
             {
-                _logger.LogWarning("Non-admin user attempted to update product {ProductId}", id);
+                var userId = GetCurrentUserId();
+                _logger.LogWarning("Non-admin user {UserId} attempted to update product {ProductId}",
+                    userId, id);
                 return Forbid();
             }
 
             try
             {
-                // Verify product exists
                 var existingResponse = await _supabase.From<Product>()
                     .Where(p => p.Id == id)
                     .Get();
@@ -257,19 +396,21 @@ namespace Pharma.Controllers
                     SupplierId = dto.SupplierId
                 };
 
-                _logger.LogInformation("Updating product {ProductId}", id);
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("Admin {UserId} updating product {ProductId}", userId, id);
 
                 await _supabase.From<Product>()
                     .Where(p => p.Id == id)
                     .Update(product);
 
-                _logger.LogInformation("Successfully updated product {ProductId}", id);
+                _logger.LogInformation("Successfully updated product {ProductId} by admin {UserId}",
+                    id, userId);
 
                 return Ok(new { message = "Product updated successfully", productId = id });
             }
             catch (PostgrestException pex)
             {
-                _logger.LogError(pex, "Database error updating product {ProductId}: {Message}", id, pex.Message);
+                _logger.LogError(pex, "PostgreSQL error updating product {ProductId}: {Message}", id, pex.Message);
                 return StatusCode(500, new { message = "Database error", detail = pex.Message });
             }
             catch (Exception ex)
@@ -285,15 +426,16 @@ namespace Pharma.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteProduct(long id)
         {
-            if (!await IsUserAdmin())
+            if (!IsUserAdmin())
             {
-                _logger.LogWarning("Non-admin user attempted to delete product {ProductId}", id);
+                var userId = GetCurrentUserId();
+                _logger.LogWarning("Non-admin user {UserId} attempted to delete product {ProductId}",
+                    userId, id);
                 return Forbid();
             }
 
             try
             {
-                // Check if product exists
                 var existingResponse = await _supabase.From<Product>()
                     .Where(p => p.Id == id)
                     .Get();
@@ -304,19 +446,21 @@ namespace Pharma.Controllers
                     return NotFound(new { message = $"Product with ID {id} not found" });
                 }
 
-                _logger.LogInformation("Deleting product {ProductId}", id);
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("Admin {UserId} deleting product {ProductId}", userId, id);
 
                 await _supabase.From<Product>()
                     .Where(p => p.Id == id)
                     .Delete();
 
-                _logger.LogInformation("Successfully deleted product {ProductId}", id);
+                _logger.LogInformation("Successfully deleted product {ProductId} by admin {UserId}",
+                    id, userId);
 
                 return Ok(new { message = "Product deleted successfully", productId = id });
             }
             catch (PostgrestException pex)
             {
-                _logger.LogError(pex, "Database error deleting product {ProductId}: {Message}", id, pex.Message);
+                _logger.LogError(pex, "PostgreSQL error deleting product {ProductId}: {Message}", id, pex.Message);
                 return StatusCode(500, new { message = "Database error", detail = pex.Message });
             }
             catch (Exception ex)
@@ -327,7 +471,7 @@ namespace Pharma.Controllers
         }
 
         /// <summary>
-        /// POST: api/products/sale - Process sale transaction
+        /// POST: api/products/sale - Process sale transaction (All authenticated users)
         /// </summary>
         [HttpPost("sale")]
         public async Task<IActionResult> ProcessSale([FromBody] List<SaleItemDto> items)
@@ -339,7 +483,15 @@ namespace Pharma.Controllers
 
             try
             {
-                _logger.LogInformation("Processing sale with {ItemCount} items", items.Count);
+                if (!IsAuthenticated())
+                {
+                    _logger.LogWarning("Unauthenticated user attempted to process sale");
+                    return Unauthorized(new { message = "Authentication required" });
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("User {UserId} processing sale with {ItemCount} items",
+                    userId, items.Count);
 
                 // Validate all products first
                 foreach (var item in items)
@@ -352,7 +504,8 @@ namespace Pharma.Controllers
 
                     if (product == null)
                     {
-                        _logger.LogWarning("Product {ProductId} not found during sale", item.ProductId);
+                        _logger.LogWarning("Product {ProductId} not found during sale by user {UserId}",
+                            item.ProductId, userId);
                         return BadRequest(new { message = $"Product ID {item.ProductId} not found" });
                     }
 
@@ -373,19 +526,16 @@ namespace Pharma.Controllers
                 // Process each sale item
                 foreach (var item in items)
                 {
-                    // Fetch current product state
                     var productResponse = await _supabase.From<Product>()
                         .Where(p => p.Id == item.ProductId)
                         .Single();
 
-                    // Update quantity
                     productResponse.Quantity -= item.QuantitySold;
 
                     await _supabase.From<Product>()
                         .Where(p => p.Id == item.ProductId)
                         .Update(productResponse);
 
-                    // Record sale
                     var sale = new Sale
                     {
                         ProductId = item.ProductId,
@@ -395,22 +545,24 @@ namespace Pharma.Controllers
 
                     await _supabase.From<Sale>().Insert(sale);
 
-                    _logger.LogInformation("Processed sale for product {ProductId}, quantity {Quantity}",
-                        item.ProductId, item.QuantitySold);
+                    _logger.LogInformation("Processed sale for product {ProductId}, quantity {Quantity} by user {UserId}",
+                        item.ProductId, item.QuantitySold, userId);
                 }
 
-                _logger.LogInformation("Sale completed successfully");
+                _logger.LogInformation("Sale completed successfully for user {UserId} with {ItemCount} items",
+                    userId, items.Count);
 
                 return Ok(new
                 {
                     success = true,
                     message = "Vente réussie",
-                    itemsProcessed = items.Count
+                    itemsProcessed = items.Count,
+                    processedAt = DateTime.UtcNow
                 });
             }
             catch (PostgrestException pex)
             {
-                _logger.LogError(pex, "Database error processing sale: {Message}", pex.Message);
+                _logger.LogError(pex, "PostgreSQL error processing sale: {Message}", pex.Message);
                 return StatusCode(500, new { message = "Database error during sale", detail = pex.Message });
             }
             catch (Exception ex)
@@ -420,6 +572,9 @@ namespace Pharma.Controllers
             }
         }
 
+        /// <summary>
+        /// Generate next product code (PR001, PR002, etc.)
+        /// </summary>
         private async Task<string> GenerateNextProductCode()
         {
             try
@@ -436,7 +591,10 @@ namespace Pharma.Controllers
                     {
                         if (int.TryParse(lastCode.Replace("PR", ""), out var num))
                         {
-                            return $"PR{(num + 1):D3}";
+                            var newCode = $"PR{(num + 1):D3}";
+                            _logger.LogInformation("Generated next product code: {NewCode} (last was {LastCode})",
+                                newCode, lastCode);
+                            return newCode;
                         }
                     }
                 }
@@ -450,13 +608,85 @@ namespace Pharma.Controllers
                 return "PR001";
             }
         }
+
+        /// <summary>
+        /// GET: api/products/stats - Get product statistics (Admin only)
+        /// </summary>
+        [HttpGet("stats")]
+        public async Task<IActionResult> GetProductStats()
+        {
+            try
+            {
+                if (!IsUserAdmin())
+                {
+                    _logger.LogWarning("Non-admin user attempted to access product stats");
+                    return Forbid();
+                }
+
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("Admin {UserId} fetching product statistics", userId);
+
+                var productsResponse = await _supabase.From<Product>().Get();
+                var products = productsResponse.Models ?? new List<Product>();
+
+                var stats = new
+                {
+                    TotalProducts = products.Count,
+                    TotalQuantity = products.Sum(p => p.Quantity),
+                    TotalInventoryValue = products.Sum(p => p.Quantity * p.Price),
+                    LowStockProducts = products.Where(p => p.Quantity < 10).Count(),
+                    OutOfStockProducts = products.Where(p => p.Quantity == 0).Count()
+                };
+
+                _logger.LogInformation("Successfully fetched product statistics for admin {UserId}", userId);
+
+                return Ok(stats);
+            }
+            catch (PostgrestException pex)
+            {
+                _logger.LogError(pex, "PostgreSQL error fetching product stats: {Message}", pex.Message);
+                return StatusCode(500, new { message = "Database error", detail = pex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching product statistics");
+                return StatusCode(500, new { message = "Error fetching statistics", detail = ex.Message });
+            }
+        }
     }
 
-    public class SaleDto
+    /// <summary>
+    /// DTO for creating/updating products
+    /// </summary>
+    public class ProductDto
+    {
+        public string? ProductCode { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public decimal Price { get; set; }
+        public decimal PrixAchat { get; set; }
+        public string? SupplierId { get; set; }
+    }
+
+    /// <summary>
+    /// DTO for sale items
+    /// </summary>
+    public class SaleItemDto
+    {
+        public long ProductId { get; set; }
+        public int QuantitySold { get; set; }
+    }
+
+    /// <summary>
+    /// DTO for sale response
+    /// </summary>
+    public class SaleResponseDto
     {
         public int Id { get; set; }
         public long ProductId { get; set; }
+        public string? ProductName { get; set; }
         public int QuantitySold { get; set; }
+        public decimal TotalAmount { get; set; }
         public DateTime SaleDate { get; set; }
     }
 }
