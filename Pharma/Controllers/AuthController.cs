@@ -1,73 +1,71 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;  // ✅ Added for logging
-using Postgrest;
-using Supabase;
 using Supabase.Gotrue;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Pharma.Controllers
 {
-    using CustomUser = Pharma.Models.User;
-
     [ApiController]
     [Route("api/auth")]
     public class AuthController : ControllerBase
     {
         private readonly Supabase.Client _supabase;
-        private readonly ILogger<AuthController> _logger;  // ✅ Added logger for better error tracking
+        private readonly ILogger<AuthController> _logger;
 
-        public AuthController(Supabase.Client supabase, ILogger<AuthController> logger) =>
-            (_supabase, _logger) = (supabase ?? throw new ArgumentNullException(nameof(supabase)), logger ?? throw new ArgumentNullException(nameof(logger)));
+        public AuthController(Supabase.Client supabase, ILogger<AuthController> logger)
+        {
+            _supabase = supabase ?? throw new ArgumentNullException(nameof(supabase));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
 
         [HttpPost("signup")]
         public async Task<IActionResult> SignUp([FromBody] SignUpRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password) ||
-                string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Surname))
+            if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
             {
-                return BadRequest(new { success = false, message = "Email, Password, Name, and Surname are required." });
+                return BadRequest(new { success = false, message = "Email and Password are required." });
             }
 
             try
             {
-                var response = await _supabase.Auth.SignUp(
-                    request.Email,
-                    request.Password,
-                    new SignUpOptions
-                    {
-                        Data = new Dictionary<string, object>
-                        {
-                            { "name", request.Name },
-                            { "surname", request.Surname }
-                        }
-                    });
+                _logger.LogInformation("Attempting signup for email: {Email}", request.Email);
 
-                if (response.User != null && !string.IsNullOrEmpty(response.AccessToken))
+                var options = new SignUpOptions
                 {
+                    Data = new Dictionary<string, object>
+                    {
+                        { "name", request.Name ?? "" },
+                        { "surname", request.Surname ?? "" },
+                        { "role", "admin" } // Pass to metadata for the database trigger
+                    }
+                };
+
+                var response = await _supabase.Auth.SignUp(request.Email, request.Password, options);
+
+                // response.User might be non-null even if email confirmation is required
+                if (response?.User != null)
+                {
+                    _logger.LogInformation("Signup successful for {Email}", request.Email);
                     return Ok(new
                     {
                         success = true,
-                        token = response.AccessToken,
-                        message = "User created successfully. Name and Surname will appear in public.users via trigger."
+                        message = "User created successfully. If email confirmation is enabled, please check your inbox."
                     });
                 }
 
-                // Handle cases like email confirmation required
-                return Ok(new
-                {
-                    success = false,
-                    message = "SignUp initiated. Please confirm your email before logging in."
-                });
+                return BadRequest(new { success = false, message = "Signup failed: No user returned." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "SignUp error for email: {Email}", request.Email);  // ✅ Added logging
+                _logger.LogError(ex, "Signup error for email: {Email}", request.Email);
 
-                if (ex.Message.Contains("user_already_exists") || ex.Message.Contains("User already registered"))
+                // Specific check for existing users
+                if (ex.Message.Contains("already_exists") || ex.Message.Contains("already registered"))
                 {
-                    return Conflict(new { success = false, message = "User already registered. Please login instead." });  // ✅ Changed to 409 Conflict
+                    return Conflict(new { success = false, message = "A user with this email already exists." });
                 }
 
-                return StatusCode(500, new { success = false, message = "SignUp failed due to server error." });
+                return StatusCode(500, new { success = false, message = ex.Message });
             }
         }
 
@@ -81,35 +79,52 @@ namespace Pharma.Controllers
 
             try
             {
-                var response = await _supabase.Auth.SignInWithPassword(request.Email, request.Password);
+                _logger.LogInformation("Attempting login for email: {Email}", request.Email);
 
-                if (response.User != null && !string.IsNullOrEmpty(response.AccessToken))
+                // In most Supabase versions, 'response' here IS the Session object
+                var session = await _supabase.Auth.SignInWithPassword(request.Email, request.Password);
+
+                if (session != null && !string.IsNullOrEmpty(session.AccessToken))
                 {
-                    return Ok(new { success = true, token = response.AccessToken, message = "Login successful." });
+                    _logger.LogInformation("Login successful for {Email}", request.Email);
+                    return Ok(new
+                    {
+                        success = true,
+                        token = session.AccessToken,
+                        message = "Login successful."
+                    });
                 }
 
-                // Login failed (invalid credentials)
-                return Unauthorized(new { success = false, message = "Invalid email or password." });  // ✅ Changed to 401 Unauthorized
+                return Unauthorized(new { success = false, message = "Invalid credentials." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Login error for email: {Email}", request.Email);  // ✅ Added logging
-                return StatusCode(500, new { success = false, message = "Login failed due to server error." });
+                _logger.LogError(ex, "Login error for email: {Email}", request.Email);
+
+                // Handle specific Supabase error messages
+                if (ex.Message.Contains("Invalid login credentials"))
+                {
+                    return Unauthorized(new { success = false, message = "Email ou mot de passe incorrect." });
+                }
+
+                return StatusCode(500, new { success = false, message = "An internal error occurred." });
             }
         }
     }
 
+    // --- Request Models ---
+
     public class SignUpRequest
     {
-        public string? Email { get; set; }
-        public string? Password { get; set; }
-        public string? Name { get; set; }
-        public string? Surname { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Surname { get; set; } = string.Empty;
     }
 
     public class LoginRequest
     {
-        public string? Email { get; set; }
-        public string? Password { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
     }
 }

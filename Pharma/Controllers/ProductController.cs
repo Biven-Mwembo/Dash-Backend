@@ -2,10 +2,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Pharma.Models;
 using Supabase;
-using Supabase.Postgrest.Exceptions;
 using System.Security.Claims;
 
-// Aliases to avoid conflicts with built-in classes
+// Aliases for local clarity
 using Product = Pharma.Models.Product;
 using Sale = Pharma.Models.Sale;
 using User = Pharma.Models.User;
@@ -14,7 +13,7 @@ namespace Pharma.Controllers
 {
     [ApiController]
     [Route("api/products")]
-    [Authorize] // Requires valid Supabase JWT
+    [Authorize]
     public class ProductsController : ControllerBase
     {
         private readonly Supabase.Client _supabase;
@@ -26,124 +25,127 @@ namespace Pharma.Controllers
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        // --- Helper: Check if current user is admin ---
+        /// <summary>
+        /// Check if the user has the 'admin' role in the public.users table.
+        /// </summary>
         private async Task<bool> IsUserAdmin()
         {
-            // Gets the UUID string from the 'sub' claim in the JWT
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                          ?? User.FindFirst("sub")?.Value;
 
-            if (string.IsNullOrEmpty(userId)) return false;
+            if (string.IsNullOrEmpty(userId))
+            {
+                _logger.LogWarning("Admin check failed: No user ID found in token.");
+                return false;
+            }
 
             try
             {
-                // Matches your Model: Id is a string (UUID)
-                var user = await _supabase.From<User>().Where(u => u.Id == userId).Single();
-                return user?.Role?.ToLower() == "admin";
+                // Note: Ensure RLS allows the authenticated user to read their own row in public.users
+                var result = await _supabase.From<User>()
+                    .Where(u => u.Id == userId)
+                    .Get();
+
+                var userRecord = result.Models.FirstOrDefault();
+
+                if (userRecord == null)
+                {
+                    _logger.LogWarning("Admin check: User {UserId} not found in public.users table.", userId);
+                    return false;
+                }
+
+                bool isAdmin = userRecord.Role?.ToLower() == "admin";
+                _logger.LogInformation("Role check for {Email}: {Role} (IsAdmin: {IsAdmin})", userRecord.Email, userRecord.Role, isAdmin);
+
+                return isAdmin;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("Admin check failed for user {UserId}: {Message}", userId, ex.Message);
+                _logger.LogError(ex, "Error querying public.users for admin check.");
                 return false;
             }
         }
 
-        // GET: api/products
         [HttpGet]
         public async Task<IActionResult> GetProducts()
         {
             try
             {
-                _logger.LogInformation("Fetching products.");
-                var productsResponse = await _supabase.From<Product>().Get();
-                var productDtos = (productsResponse.Models ?? new List<Product>())
-                    .Select(p => new ProductDto
-                    {
-                        Id = p.Id,
-                        ProductCode = p.ProductCode,
-                        Name = p.Name,
-                        Quantity = p.Quantity,
-                        Price = p.Price,
-                        PrixAchat = p.PrixAchat,
-                        SupplierId = p.SupplierId,
-                        CreatedAt = p.CreatedAt
-                    }).ToList();
-
-                return Ok(productDtos);
+                var response = await _supabase.From<Product>().Get();
+                var products = response.Models ?? new List<Product>();
+                return Ok(products);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching products.");
-                return StatusCode(500, "Error retrieving products.");
+                return StatusCode(500, "Internal server error.");
             }
         }
 
-        // GET: api/products/sales
         [HttpGet("sales")]
         public async Task<IActionResult> GetProductSales()
         {
             try
             {
-                _logger.LogInformation("Fetching sales history.");
-                var salesResponse = await _supabase.From<Sale>().Get();
-                var saleDtos = (salesResponse.Models ?? new List<Sale>())
-                    .Select(s => new SaleDto
-                    {
-                        Id = s.Id,
-                        ProductId = s.ProductId,
-                        QuantitySold = s.QuantitySold,
-                        SaleDate = s.SaleDate
-                    }).ToList();
+                var response = await _supabase.From<Sale>().Get();
+                var saleDtos = response.Models.Select(s => new SaleDto
+                {
+                    Id = s.Id,
+                    ProductId = s.ProductId,
+                    QuantitySold = s.QuantitySold,
+                    SaleDate = s.SaleDate
+                }).ToList();
 
                 return Ok(saleDtos);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching sales.");
-                return StatusCode(500, "Error retrieving sales history.");
+                return StatusCode(500, "Internal server error.");
             }
         }
 
-        // GET: api/products/sales/daily
         [HttpGet("sales/daily")]
         public async Task<IActionResult> GetDailySales()
         {
             try
             {
-                _logger.LogInformation("Fetching daily sales statistics.");
                 var response = await _supabase.From<Sale>().Get();
-                var sales = response.Models ?? new List<Sale>();
-
-                var dailyTotals = sales
+                var dailyTotals = response.Models
                     .GroupBy(s => s.SaleDate.Date)
                     .Select(g => new
                     {
                         Date = g.Key.ToString("yyyy-MM-dd"),
                         Count = g.Sum(s => s.QuantitySold)
                     })
-                    .OrderBy(x => x.Date)
-                    .ToList();
+                    .OrderBy(x => x.Date);
 
                 return Ok(dailyTotals);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in GetDailySales.");
-                return StatusCode(500, "Error fetching daily statistics.");
+                return StatusCode(500, "Error fetching stats.");
             }
         }
 
-        // POST: api/products
         [HttpPost]
         public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
         {
-            if (!await IsUserAdmin()) return Forbid();
+            // Verify admin status before allowing creation
+            if (!await IsUserAdmin())
+            {
+                _logger.LogWarning("Unauthorized attempt to create product.");
+                return Forbid();
+            }
 
             try
             {
                 var product = new Product
                 {
-                    ProductCode = !string.IsNullOrEmpty(productDto.ProductCode) ? productDto.ProductCode : await GenerateNextProductCode(),
+                    ProductCode = string.IsNullOrEmpty(productDto.ProductCode)
+                        ? await GenerateNextProductCode()
+                        : productDto.ProductCode,
                     Name = productDto.Name,
                     Quantity = productDto.Quantity,
                     Price = productDto.Price,
@@ -157,41 +159,42 @@ namespace Pharma.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error creating product.");
-                return StatusCode(500, "Creation failed.");
+                return StatusCode(500, "Product creation failed.");
             }
         }
 
-        // POST: api/products/sale
         [HttpPost("sale")]
         public async Task<IActionResult> ProcessSale([FromBody] List<SaleItemDto> items)
         {
-            if (items == null || !items.Any()) return BadRequest("Panier vide.");
+            if (items == null || !items.Any()) return BadRequest("Basket is empty.");
 
             try
             {
                 foreach (var item in items)
                 {
-                    var productResponse = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
-                    if (productResponse == null) return NotFound($"Produit {item.ProductId} non trouvé.");
-                    if (productResponse.Quantity < item.QuantitySold) return BadRequest($"Stock insuffisant pour {productResponse.Name}.");
+                    var product = await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Single();
 
-                    productResponse.Quantity -= item.QuantitySold;
-                    await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Update(productResponse);
+                    if (product == null) return NotFound($"Product {item.ProductId} not found.");
+                    if (product.Quantity < item.QuantitySold) return BadRequest($"Insufficient stock for {product.Name}.");
 
-                    var saleRecord = new Sale
+                    // Update Stock
+                    product.Quantity -= item.QuantitySold;
+                    await _supabase.From<Product>().Where(p => p.Id == item.ProductId).Update(product);
+
+                    // Record Sale
+                    await _supabase.From<Sale>().Insert(new Sale
                     {
                         ProductId = item.ProductId,
                         QuantitySold = item.QuantitySold,
                         SaleDate = DateTime.UtcNow
-                    };
-                    await _supabase.From<Sale>().Insert(saleRecord);
+                    });
                 }
-                return Ok(new { message = "Vente réussie." });
+                return Ok(new { message = "Sale processed successfully." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Sale process error.");
-                return StatusCode(500, "Internal Server Error.");
+                _logger.LogError(ex, "Sale processing error.");
+                return StatusCode(500, "Internal error during sale.");
             }
         }
 
@@ -199,45 +202,53 @@ namespace Pharma.Controllers
         public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto productDto)
         {
             if (!await IsUserAdmin()) return Forbid();
+
             try
             {
-                var product = new Product
+                var update = new Product
                 {
                     Id = id,
-                    ProductCode = productDto.ProductCode,
                     Name = productDto.Name,
                     Quantity = productDto.Quantity,
                     Price = productDto.Price,
                     PrixAchat = productDto.PrixAchat,
-                    SupplierId = productDto.SupplierId
+                    SupplierId = productDto.SupplierId,
+                    ProductCode = productDto.ProductCode
                 };
-                await _supabase.From<Product>().Where(p => p.Id == id).Update(product);
+                await _supabase.From<Product>().Where(p => p.Id == id).Update(update);
                 return Ok();
             }
-            catch (Exception ex) { return StatusCode(500, ex.Message); }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ex.Message);
+            }
         }
 
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteProduct(long id)
         {
             if (!await IsUserAdmin()) return Forbid();
+
             try
             {
                 await _supabase.From<Product>().Where(p => p.Id == id).Delete();
                 return Ok();
             }
-            catch (Exception ex) { return StatusCode(500, ex.Message); }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ex.Message);
+            }
         }
 
         private async Task<string> GenerateNextProductCode()
         {
-            var products = await _supabase.From<Product>()
+            var result = await _supabase.From<Product>()
                 .Order(p => p.ProductCode, Supabase.Postgrest.Constants.Ordering.Descending)
                 .Limit(1).Get();
 
-            if (products.Models.Any())
+            if (result.Models.Any())
             {
-                var lastCode = products.Models.First().ProductCode;
+                var lastCode = result.Models.First().ProductCode;
                 if (int.TryParse(lastCode?.Replace("PR", ""), out var num))
                 {
                     return $"PR{(num + 1):D3}";
@@ -247,7 +258,7 @@ namespace Pharma.Controllers
         }
     }
 
-    // --- Added missing DTO to fix compilation error ---
+    // DTO kept in same file for compilation convenience
     public class SaleDto
     {
         public int Id { get; set; }
