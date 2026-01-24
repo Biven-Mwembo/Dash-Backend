@@ -87,6 +87,14 @@ namespace Pharma.Models
         public DateTime CreatedAt { get; set; }
     }
 
+    public class SaleDto
+    {
+        public int Id { get; set; }
+        public long ProductId { get; set; }
+        public int QuantitySold { get; set; }
+        public DateTime SaleDate { get; set; }
+    }
+
     // New: DTO for sale items (used in checkout)
     public class SaleItemDto
     {

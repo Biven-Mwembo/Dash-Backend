@@ -24,45 +24,35 @@ namespace Pharma.Controllers
         [HttpGet]
         public async Task<IActionResult> GetDashboardData()
         {
-            var dashboardData = new DashboardData();
-
             try
             {
-                _logger.LogInformation("Compiling dashboard statistics.");
-
-                // Parallel fetching
                 var salesTask = _supabase.From<Sale>().Get();
                 var lowStockTask = _supabase.From<Product>().Where(p => p.Quantity <= 5).Get();
                 await Task.WhenAll(salesTask, lowStockTask);
 
-                // 1. Determine Most Selling Product
                 var sales = salesTask.Result.Models ?? new List<Sale>();
+                Product? topProduct = null;
+
                 if (sales.Any())
                 {
-                    var topProductId = sales
-                        .GroupBy(s => s.ProductId)
+                    var topProductId = sales.GroupBy(s => s.ProductId)
                         .OrderByDescending(g => g.Sum(s => s.QuantitySold))
-                        .Select(g => g.Key)
-                        .FirstOrDefault();
+                        .Select(g => g.Key).FirstOrDefault();
 
-                    if (topProductId != 0)
-                    {
-                        var productResponse = await _supabase.From<Product>()
-                            .Where(p => p.Id == topProductId)
-                            .Get();
-                        dashboardData.MostSellingProduct = productResponse.Models.FirstOrDefault();
-                    }
+                    var pRes = await _supabase.From<Product>().Where(p => p.Id == topProductId).Get();
+                    topProduct = pRes.Models.FirstOrDefault();
                 }
 
-                // 2. Map Low Stock
-                dashboardData.LowStockProducts = lowStockTask.Result.Models ?? new List<Product>();
-
-                return Ok(dashboardData);
+                return Ok(new DashboardData
+                {
+                    MostSellingProduct = topProduct,
+                    LowStockProducts = lowStockTask.Result.Models ?? new List<Product>()
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Dashboard compilation failed.");
-                return StatusCode(500, "Internal error.");
+                _logger.LogError(ex, "Dashboard Error");
+                return StatusCode(500, "Dashboard failed to load.");
             }
         }
     }
