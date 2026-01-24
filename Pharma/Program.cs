@@ -1,11 +1,30 @@
 ﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Supabase; // Ensure you have this for the client
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Get your Supabase JWT Secret (Keep this secret!)
-var jwtSecret = builder.Configuration["Supabase:JwtSecret"];
+// --- 1. SERVICE REGISTRATIONS ---
+
+// Add Controllers (This was missing!)
+builder.Services.AddControllers();
+
+// Authorization (This was the cause of your Render crash!)
+builder.Services.AddAuthorization();
+
+// Supabase Client Setup (Ensure this matches your setup)
+var supabaseUrl = builder.Configuration["Supabase:Url"];
+var supabaseKey = builder.Configuration["Supabase:AnonKey"];
+builder.Services.AddScoped(_ => new Supabase.Client(supabaseUrl, supabaseKey, new SupabaseOptions
+{
+    AutoRefreshToken = true,
+    AutoConnectRealtime = true
+}));
+
+// JWT Authentication Setup
+var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
+                ?? throw new InvalidOperationException("Supabase JWT Secret is not configured.");
 var key = Encoding.ASCII.GetBytes(jwtSecret);
 
 builder.Services.AddAuthentication(options =>
@@ -19,23 +38,28 @@ builder.Services.AddAuthentication(options =>
     {
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(key),
-        ValidateIssuer = false, // Supabase issuers can vary, usually safe to keep false for simple setups
+        ValidateIssuer = false,
         ValidateAudience = true,
-        ValidAudience = "authenticated", // Supabase default audience
+        ValidAudience = "authenticated",
         ClockSkew = TimeSpan.Zero
     };
 });
 
-// 2. Add CORS so your Netlify frontend can talk to Render
+// CORS
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", b => b.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 });
 
 var app = builder.Build();
 
+// --- 2. MIDDLEWARE PIPELINE ---
+// Order is extremely important here!
+
 app.UseCors("AllowAll");
-app.UseAuthentication(); // Must come before UseAuthorization
-app.UseAuthorization();
+
+app.UseAuthentication(); // Checks WHO you are
+app.UseAuthorization();  // Checks what you are ALLOWED to do
 
 app.MapControllers();
+
 app.Run();
