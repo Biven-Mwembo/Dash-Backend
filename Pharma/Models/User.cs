@@ -1,23 +1,30 @@
 ﻿using Supabase.Postgrest.Attributes;
 using Supabase.Postgrest.Models;
+
 namespace Pharma.Models
 {
     [Table("users")]
     public class User : BaseModel
     {
         [PrimaryKey("id", false)]
-        public string Id { get; set; }  // Changed to string for Supabase UUID handling
+        public string Id { get; set; } = string.Empty;
+
         [Column("email")]
-        public string Email { get; set; }
+        public string Email { get; set; } = string.Empty;
+
         [Column("role")]
-        public string Role { get; set; }
+        public string Role { get; set; } = "user";
+
         [Column("name")]
-        public string Name { get; set; }
+        public string Name { get; set; } = string.Empty;
+
         [Column("surname")]
-        public string Surname { get; set; }
+        public string Surname { get; set; } = string.Empty;
+
+        [Column("password_hash")]
+        public string PasswordHash { get; set; } = string.Empty;
     }
 
-    // Models/Product.cs (UPDATED)
     [Table("products")]
     public class Product : BaseModel
     {
@@ -25,19 +32,19 @@ namespace Pharma.Models
         public long Id { get; set; }
 
         [Column("product_code")]
-        public string ProductCode { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
 
         [Column("name")]
-        public string Name { get; set; }
+        public string Name { get; set; } = string.Empty;
 
         [Column("quantity")]
         public int Quantity { get; set; }
 
         [Column("price")]
-        public decimal Price { get; set; } // Selling Price (Prix Vente)
+        public decimal Price { get; set; }
 
-        [Column("prix_achat")] // New Column Mapping
-        public decimal PrixAchat { get; set; } // Purchase Price (Prix Achat)
+        [Column("prix_achat")]
+        public decimal PrixAchat { get; set; }
 
         [Column("supplier_id")]
         public string? SupplierId { get; set; }
@@ -46,7 +53,6 @@ namespace Pharma.Models
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 
-    // Models/Sale.cs
     [Table("sales")]
     public class Sale : BaseModel
     {
@@ -54,7 +60,7 @@ namespace Pharma.Models
         public int Id { get; set; }
 
         [Column("product_id")]
-        public long ProductId { get; set; }  // Updated: Changed from string to long to match bigint in database
+        public long ProductId { get; set; }
 
         [Column("quantity_sold")]
         public int QuantitySold { get; set; }
@@ -63,26 +69,21 @@ namespace Pharma.Models
         public DateTime SaleDate { get; set; } = DateTime.UtcNow;
     }
 
-    // Models/Dashboard.cs (for responses)
     public class DashboardData
     {
-        public Product MostSellingProduct { get; set; }
-        public List<Product> LowStockProducts { get; set; }
+        // Added ? to make these nullable and avoid initialization warnings
+        public Product? MostSellingProduct { get; set; }
+        public List<Product> LowStockProducts { get; set; } = new();
     }
 
-    // Add this new DTO class for safe serialization (no Supabase attributes)
-    // Models/ProductDto (UPDATED)
     public class ProductDto
     {
         public long Id { get; set; }
-        public string ProductCode { get; set; }
-        public string Name { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
         public int Quantity { get; set; }
         public decimal Price { get; set; }
-
-        // New DTO Property
         public decimal PrixAchat { get; set; }
-
         public string? SupplierId { get; set; }
         public DateTime CreatedAt { get; set; }
     }
@@ -95,7 +96,6 @@ namespace Pharma.Models
         public DateTime SaleDate { get; set; }
     }
 
-    // New: DTO for sale items (used in checkout)
     public class SaleItemDto
     {
         public long ProductId { get; set; }
