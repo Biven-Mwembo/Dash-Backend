@@ -5,7 +5,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
-using BCrypt.Net; // ✅ Import BCrypt
+using BCrypt.Net; // This will light up now!
 
 namespace Pharma.Controllers
 {
@@ -36,26 +36,26 @@ namespace Pharma.Controllers
                     return BadRequest(new { Message = "User already exists" });
                 }
 
-                // 2. Hash the password
+                // 2. Hash the password using BCrypt
+                // This call makes the 'using' statement active
                 string hashedPassword = BCrypt.Net.BCrypt.HashPassword(dto.Password);
 
                 // 3. Create User Object
                 var newUser = new User
                 {
-                    // Generate ID manually if your DB doesn't auto-generate it
                     Id = Guid.NewGuid().ToString(),
                     Email = dto.Email,
                     Name = dto.Name,
                     Surname = dto.Surname,
                     Role = "user",
-                    PasswordHash = hashedPassword // ✅ Store Hash, not password
+                    PasswordHash = hashedPassword
                 };
 
                 // 4. Insert into 'users' table
                 var response = await _supabase.From<User>().Insert(newUser);
                 var createdUser = response.Models.FirstOrDefault();
 
-                return Ok(new { Message = "Signup successful", User = createdUser });
+                return Ok(new { Message = "Signup successful", User = new { createdUser?.Email, createdUser?.Name } });
             }
             catch (Exception ex)
             {
@@ -69,7 +69,7 @@ namespace Pharma.Controllers
         {
             try
             {
-                // 1. Get user by Email from DB
+                // 1. Get user by Email
                 var response = await _supabase
                     .From<User>()
                     .Where(u => u.Email == dto.Email)
@@ -77,15 +77,9 @@ namespace Pharma.Controllers
 
                 var user = response.Models.FirstOrDefault();
 
-                if (user == null)
-                {
-                    return Unauthorized(new { Message = "Invalid credentials" });
-                }
-
-                // 2. Verify Password Hash
-                bool isPasswordValid = BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash);
-
-                if (!isPasswordValid)
+                // 2. Check user existence and Verify Password Hash
+                // Use the explicit check to avoid null reference on PasswordHash
+                if (user == null || string.IsNullOrEmpty(user.PasswordHash) || !BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash))
                 {
                     return Unauthorized(new { Message = "Invalid credentials" });
                 }
@@ -109,20 +103,22 @@ namespace Pharma.Controllers
         private string GenerateJwtToken(User user)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
-
-            // ✅ Ensure this path matches Program.cs and appsettings.json
             var secret = _configuration["Supabase:JwtSecret"];
+
+            if (string.IsNullOrEmpty(secret))
+                throw new Exception("JWT Secret is missing in configuration.");
+
             var key = Encoding.ASCII.GetBytes(secret);
 
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(new[]
                 {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
-            new Claim(ClaimTypes.Email, user.Email),
-            new Claim(ClaimTypes.Role, user.Role ?? "user"),
-            new Claim("role", user.Role ?? "user") // Useful for frontend decoding
-        }),
+                    new Claim(ClaimTypes.NameIdentifier, user.Id),
+                    new Claim(ClaimTypes.Email, user.Email),
+                    new Claim(ClaimTypes.Role, user.Role ?? "user"),
+                    new Claim("role", user.Role ?? "user")
+                }),
                 Expires = DateTime.UtcNow.AddDays(7),
                 SigningCredentials = new SigningCredentials(
                     new SymmetricSecurityKey(key),
@@ -134,7 +130,6 @@ namespace Pharma.Controllers
         }
     }
 
-  
     public class SignupDto
     {
         public string Email { get; set; } = string.Empty;
@@ -148,4 +143,4 @@ namespace Pharma.Controllers
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
     }
-} // End of namespace Pharma.Controllers
+}
