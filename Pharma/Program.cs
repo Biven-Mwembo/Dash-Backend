@@ -1,22 +1,21 @@
 ﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
-using Supabase; // Ensure you have this for the client
+using Supabase;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- 1. SERVICE REGISTRATIONS ---
-
-// Add Controllers (This was missing!)
 builder.Services.AddControllers();
-
-// Authorization (This was the cause of your Render crash!)
 builder.Services.AddAuthorization();
 
-// Supabase Client Setup (Ensure this matches your setup)
+// Supabase Client Setup
 var supabaseUrl = builder.Configuration["Supabase:Url"];
-var supabaseKey = builder.Configuration["Supabase:AnonKey"];
-builder.Services.AddScoped(_ => new Supabase.Client(supabaseUrl, supabaseKey, new SupabaseOptions
+// ✅ CHANGED: Use ServiceRoleKey so the backend can bypass RLS to find users and verify passwords
+var supabaseServiceKey = builder.Configuration["Supabase:ServiceRoleKey"]
+                         ?? builder.Configuration["Supabase:Key"];
+
+builder.Services.AddScoped(_ => new Supabase.Client(supabaseUrl, supabaseServiceKey, new SupabaseOptions
 {
     AutoRefreshToken = true,
     AutoConnectRealtime = true
@@ -39,8 +38,7 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(key),
         ValidateIssuer = false,
-        ValidateAudience = true,
-        ValidAudience = "authenticated",
+        ValidateAudience = false,
         ClockSkew = TimeSpan.Zero
     };
 });
@@ -53,12 +51,10 @@ builder.Services.AddCors(options => {
 var app = builder.Build();
 
 // --- 2. MIDDLEWARE PIPELINE ---
-// Order is extremely important here!
-
 app.UseCors("AllowAll");
 
-app.UseAuthentication(); // Checks WHO you are
-app.UseAuthorization();  // Checks what you are ALLOWED to do
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 

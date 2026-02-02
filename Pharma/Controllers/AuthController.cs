@@ -5,6 +5,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
+using BCrypt.Net; // ✅ Import BCrypt
 
 namespace Pharma.Controllers
 {
@@ -28,55 +29,37 @@ namespace Pharma.Controllers
         {
             try
             {
-                _logger.LogInformation("Signup attempt for email: {Email}", dto.Email);
-
-                // 1. Create Supabase Auth user
-                var signUpResponse = await _supabase.Auth.SignUp(dto.Email, dto.Password);
-
-                if (signUpResponse?.User == null)
+                // 1. Check if user already exists
+                var existing = await _supabase.From<User>().Where(u => u.Email == dto.Email).Get();
+                if (existing.Models.Any())
                 {
-                    return BadRequest(new { Message = "Failed to create authentication user" });
+                    return BadRequest(new { Message = "User already exists" });
                 }
 
-                var supabaseUserId = signUpResponse.User.Id;
-                _logger.LogInformation("Supabase user created with ID: {UserId}", supabaseUserId);
+                // 2. Hash the password
+                string hashedPassword = BCrypt.Net.BCrypt.HashPassword(dto.Password);
 
-                // 2. Create user record in users table
+                // 3. Create User Object
                 var newUser = new User
                 {
-                    Id = supabaseUserId,
+                    // Generate ID manually if your DB doesn't auto-generate it
+                    Id = Guid.NewGuid().ToString(),
                     Email = dto.Email,
                     Name = dto.Name,
                     Surname = dto.Surname,
-                    Role = "user" // ✅ Default role
+                    Role = "user",
+                    PasswordHash = hashedPassword // ✅ Store Hash, not password
                 };
 
-                var insertResponse = await _supabase.From<User>().Insert(newUser);
-                var createdUser = insertResponse.Models.FirstOrDefault();
+                // 4. Insert into 'users' table
+                var response = await _supabase.From<User>().Insert(newUser);
+                var createdUser = response.Models.FirstOrDefault();
 
-                if (createdUser == null)
-                {
-                    return StatusCode(500, new { Message = "User created in auth but failed to save to database" });
-                }
-
-                _logger.LogInformation("User record created in database with ID: {UserId}", createdUser.Id);
-
-                return Ok(new
-                {
-                    Message = "Signup successful. Please check your email to verify your account.",
-                    User = new
-                    {
-                        createdUser.Id,
-                        createdUser.Email,
-                        createdUser.Name,
-                        createdUser.Surname,
-                        createdUser.Role
-                    }
-                });
+                return Ok(new { Message = "Signup successful", User = createdUser });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Signup failed for email: {Email}", dto.Email);
+                _logger.LogError(ex, "Signup failed");
                 return StatusCode(500, new { Message = "Signup failed", Detail = ex.Message });
             }
         }
@@ -86,76 +69,72 @@ namespace Pharma.Controllers
         {
             try
             {
-                _logger.LogInformation("Login attempt for email: {Email}", dto.Email);
-
-                // 1. Authenticate with Supabase
-                var session = await _supabase.Auth.SignIn(dto.Email, dto.Password);
-
-                if (session?.AccessToken == null)
-                {
-                    return Unauthorized(new { Message = "Invalid email or password" });
-                }
-
-                // 2. Get user from database to retrieve role
-                var userResponse = await _supabase
+                // 1. Get user by Email from DB
+                var response = await _supabase
                     .From<User>()
                     .Where(u => u.Email == dto.Email)
-                    .Single();
+                    .Get();
 
-                if (userResponse == null)
+                var user = response.Models.FirstOrDefault();
+
+                if (user == null)
                 {
-                    return Unauthorized(new { Message = "User not found in database" });
+                    return Unauthorized(new { Message = "Invalid credentials" });
                 }
 
-                _logger.LogInformation("User {Email} logged in successfully with role: {Role}", dto.Email, userResponse.Role);
+                // 2. Verify Password Hash
+                bool isPasswordValid = BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash);
 
-                // 3. Create custom JWT with role claim
-                var tokenHandler = new JwtSecurityTokenHandler();
-                var key = Encoding.ASCII.GetBytes(_configuration["Jwt:Secret"] ?? "your-secret-key-must-be-at-least-32-characters-long-for-security!");
-
-                var tokenDescriptor = new SecurityTokenDescriptor
+                if (!isPasswordValid)
                 {
-                    Subject = new ClaimsIdentity(new[]
-                    {
-                        new Claim(ClaimTypes.NameIdentifier, userResponse.Id),
-                        new Claim(ClaimTypes.Email, userResponse.Email),
-                        new Claim(ClaimTypes.Name, $"{userResponse.Name} {userResponse.Surname}"),
-                        new Claim(ClaimTypes.Role, userResponse.Role ?? "user"),
-                        new Claim("role", userResponse.Role ?? "user"),
-                        new Claim("user_id", userResponse.Id)
-                    }),
-                    Expires = DateTime.UtcNow.AddDays(7),
-                    SigningCredentials = new SigningCredentials(
-                        new SymmetricSecurityKey(key),
-                        SecurityAlgorithms.HmacSha256Signature
-                    )
-                };
+                    return Unauthorized(new { Message = "Invalid credentials" });
+                }
 
-                var token = tokenHandler.CreateToken(tokenDescriptor);
-                var tokenString = tokenHandler.WriteToken(token);
+                // 3. Generate Token
+                var tokenString = GenerateJwtToken(user);
 
                 return Ok(new
                 {
                     Token = tokenString,
-                    User = new
-                    {
-                        userResponse.Id,
-                        userResponse.Email,
-                        userResponse.Name,
-                        userResponse.Surname,
-                        userResponse.Role
-                    }
+                    User = new { user.Id, user.Email, user.Name, user.Surname, user.Role }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Login failed for email: {Email}", dto.Email);
-                return Unauthorized(new { Message = "Login failed", Detail = ex.Message });
+                _logger.LogError(ex, "Login failed");
+                return StatusCode(500, new { Message = "Login failed", Detail = ex.Message });
             }
+        }
+
+        private string GenerateJwtToken(User user)
+        {
+            var tokenHandler = new JwtSecurityTokenHandler();
+
+            // ✅ Ensure this path matches Program.cs and appsettings.json
+            var secret = _configuration["Supabase:JwtSecret"];
+            var key = Encoding.ASCII.GetBytes(secret);
+
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(new[]
+                {
+            new Claim(ClaimTypes.NameIdentifier, user.Id),
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(ClaimTypes.Role, user.Role ?? "user"),
+            new Claim("role", user.Role ?? "user") // Useful for frontend decoding
+        }),
+                Expires = DateTime.UtcNow.AddDays(7),
+                SigningCredentials = new SigningCredentials(
+                    new SymmetricSecurityKey(key),
+                    SecurityAlgorithms.HmacSha256Signature)
+            };
+
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
         }
     }
 
-    // DTOs
+  
     public class SignupDto
     {
         public string Email { get; set; } = string.Empty;
@@ -169,4 +148,4 @@ namespace Pharma.Controllers
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
     }
-}
+} // End of namespace Pharma.Controllers
