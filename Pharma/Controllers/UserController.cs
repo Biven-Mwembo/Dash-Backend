@@ -46,7 +46,20 @@ namespace Pharma.Controllers
                 {
                     _logger.LogInformation("Admin user {UserId} requesting all users", currentUserId);
                     var response = await _supabase.From<CustomUser>().Get();
-                    return Ok(response.Models ?? new List<CustomUser>());
+                    var users = response?.Models ?? new List<CustomUser>();
+
+                    // ✅ Map to DTOs
+                    var userDtos = users.Select(u => new UserDto
+                    {
+                        Id = u.Id,
+                        Email = u.Email,
+                        Name = u.Name,
+                        Surname = u.Surname,
+                        Role = u.Role,
+                        CreatedAt = u.CreatedAt
+                    }).ToList();
+
+                    return Ok(userDtos);
                 }
 
                 // If not admin, only return the current user's own record
@@ -56,12 +69,30 @@ namespace Pharma.Controllers
                     .Where(u => u.Id == currentUserId)
                     .Get();
 
-                return Ok(singleResponse.Models);
+                var currentUserList = singleResponse?.Models ?? new List<CustomUser>();
+
+                // ✅ Map to DTOs
+                var currentUserDtos = currentUserList.Select(u => new UserDto
+                {
+                    Id = u.Id,
+                    Email = u.Email,
+                    Name = u.Name,
+                    Surname = u.Surname,
+                    Role = u.Role,
+                    CreatedAt = u.CreatedAt
+                }).ToList();
+
+                return Ok(currentUserDtos);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error fetching users");
-                return StatusCode(500, new { Message = "Error fetching users", Detail = ex.Message });
+                _logger.LogError(ex, "Error fetching users: {Message}", ex.Message);
+                return StatusCode(500, new
+                {
+                    Message = "Error fetching users",
+                    Detail = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
             }
         }
 
@@ -87,18 +118,29 @@ namespace Pharma.Controllers
 
                 _logger.LogInformation("Fetching profile for user: {UserId}", userId);
 
-                var response = await _supabase
+                var user = await _supabase
                     .From<CustomUser>()
                     .Where(u => u.Id == userId)
                     .Single();
 
-                if (response == null)
+                if (user == null)
                 {
                     _logger.LogWarning("User not found: {UserId}", userId);
                     return NotFound(new { Message = "User not found" });
                 }
 
-                return Ok(response);
+                // ✅ Map to DTO
+                var userDto = new UserDto
+                {
+                    Id = user.Id,
+                    Email = user.Email,
+                    Name = user.Name,
+                    Surname = user.Surname,
+                    Role = user.Role,
+                    CreatedAt = user.CreatedAt
+                };
+
+                return Ok(userDto);
             }
             catch (Exception ex)
             {
@@ -149,17 +191,21 @@ namespace Pharma.Controllers
 
                 _logger.LogInformation("Profile updated successfully for user: {UserId}", userId);
 
+                // ✅ Return DTO
+                var userDto = new UserDto
+                {
+                    Id = currentUser.Id,
+                    Email = currentUser.Email,
+                    Name = currentUser.Name,
+                    Surname = currentUser.Surname,
+                    Role = currentUser.Role,
+                    CreatedAt = currentUser.CreatedAt
+                };
+
                 return Ok(new
                 {
                     Message = "Profile updated successfully",
-                    User = new
-                    {
-                        currentUser.Id,
-                        currentUser.Email,
-                        currentUser.Name,
-                        currentUser.Surname,
-                        currentUser.Role
-                    }
+                    User = userDto
                 });
             }
             catch (Exception ex)
@@ -199,6 +245,17 @@ namespace Pharma.Controllers
                 return StatusCode(500, new { Message = "Error deleting user", Detail = ex.Message });
             }
         }
+    }
+
+    // ✅ Add UserDto class
+    public class UserDto
+    {
+        public Guid Id { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string? Name { get; set; }
+        public string? Surname { get; set; }
+        public string Role { get; set; } = "user";
+        public DateTime? CreatedAt { get; set; }
     }
 
     // DTO for updating profile
