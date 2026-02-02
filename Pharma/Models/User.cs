@@ -7,7 +7,7 @@ namespace Pharma.Models
     public class User : BaseModel
     {
         [PrimaryKey("id", false)]
-        public string Id { get; set; } = string.Empty;
+        public Guid Id { get; set; } = Guid.NewGuid(); // ✅ Changed from string to Guid
 
         [Column("email")]
         public string Email { get; set; } = string.Empty;
@@ -23,6 +23,9 @@ namespace Pharma.Models
 
         [Column("password_hash")]
         public string PasswordHash { get; set; } = string.Empty;
+
+        [Column("created_at")]
+        public DateTime? CreatedAt { get; set; }
     }
 
     [Table("products")]
