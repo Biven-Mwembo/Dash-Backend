@@ -2,8 +2,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Pharma.Models;
 using Supabase;
-using Product = Pharma.Models.Product;
-using Sale = Pharma.Models.Sale;
 
 namespace Pharma.Controllers
 {
@@ -22,56 +20,68 @@ namespace Pharma.Controllers
         }
 
         [HttpGet]
-        [Authorize(Roles = "admin")] // Dashboard data is usually sensitive admin info
+        [Authorize(Roles = "admin")]
         public async Task<IActionResult> GetDashboardData()
         {
             try
             {
-                // 1. Start tasks in parallel
-                // Optimization: Only get sales from the last 30 days to calculate "Top Product"
-                var salesTask = _supabase.From<Sale>()
-                    .Where(s => s.SaleDate >= DateTime.UtcNow.AddDays(-30))
+                _logger.LogInformation("Fetching dashboard data");
+
+                // Fetch sales from last 30 days
+                var thirtyDaysAgo = DateTime.UtcNow.AddDays(-30);
+
+                var salesTask = _supabase
+                    .From<Sale>()
+                    .Where(s => s.SaleDate >= thirtyDaysAgo)
                     .Get();
 
-                var lowStockTask = _supabase.From<Product>()
+                var lowStockTask = _supabase
+                    .From<Product>()
                     .Where(p => p.Quantity <= 5)
                     .Get();
 
                 await Task.WhenAll(salesTask, lowStockTask);
 
-                var sales = salesTask.Result.Models ?? new List<Sale>();
+                var sales = salesTask.Result?.Models ?? new List<Sale>();
+                var lowStockProducts = lowStockTask.Result?.Models ?? new List<Product>();
+
                 Product? topProduct = null;
 
-                // 2. Calculate Top Product ID from the list
                 if (sales.Any())
                 {
-                    var topProductId = sales.GroupBy(s => s.ProductId)
+                    var topProductId = sales
+                        .GroupBy(s => s.ProductId)
                         .OrderByDescending(g => g.Sum(s => s.QuantitySold))
                         .Select(g => g.Key)
                         .FirstOrDefault();
 
-                    // Fetch the details for just that one top product
-                    var pRes = await _supabase.From<Product>().Where(p => p.Id == topProductId).Single();
-                    topProduct = pRes;
+                    if (topProductId > 0)
+                    {
+                        topProduct = await _supabase
+                            .From<Product>()
+                            .Where(p => p.Id == topProductId)
+                            .Single();
+                    }
                 }
 
-                return Ok(new DashboardData
+                _logger.LogInformation("Dashboard data fetched successfully. Low stock items: {Count}", lowStockProducts.Count);
+
+                return Ok(new
                 {
                     MostSellingProduct = topProduct,
-                    LowStockProducts = lowStockTask.Result.Models ?? new List<Product>()
+                    LowStockProducts = lowStockProducts
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Dashboard Error");
-                return StatusCode(500, new { message = "Dashboard failed to load", detail = ex.Message });
+                _logger.LogError(ex, "Dashboard error: {Message}", ex.Message);
+                return StatusCode(500, new
+                {
+                    Message = "Dashboard failed to load",
+                    Detail = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
             }
         }
-    }
-
-    public class DashboardData
-    {
-        public Product? MostSellingProduct { get; set; }
-        public List<Product> LowStockProducts { get; set; } = new();
     }
 }

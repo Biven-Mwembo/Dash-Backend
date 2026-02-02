@@ -11,7 +11,6 @@ builder.Services.AddAuthorization();
 
 // Supabase Client Setup
 var supabaseUrl = builder.Configuration["Supabase:Url"];
-// ✅ CHANGED: Use ServiceRoleKey so the backend can bypass RLS to find users and verify passwords
 var supabaseServiceKey = builder.Configuration["Supabase:ServiceRoleKey"]
                          ?? builder.Configuration["Supabase:Key"];
 
@@ -43,15 +42,46 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// CORS
-builder.Services.AddCors(options => {
-    options.AddPolicy("AllowAll", b => b.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+// ✅ IMPROVED CORS Configuration
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.WithOrigins(
+                "https://kinlight.netlify.app",
+                "http://localhost:3000",
+                "http://localhost:5173"
+            )
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
+    });
 });
 
 var app = builder.Build();
 
 // --- 2. MIDDLEWARE PIPELINE ---
+// ✅ CORS must be BEFORE Authentication/Authorization
 app.UseCors("AllowAll");
+
+// ✅ Add global exception handler
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+
+        // Add CORS headers even on errors
+        context.Response.Headers.Add("Access-Control-Allow-Origin", "https://kinlight.netlify.app");
+
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Message = "An internal server error occurred",
+            Detail = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error.Message
+        });
+    });
+});
 
 app.UseAuthentication();
 app.UseAuthorization();
