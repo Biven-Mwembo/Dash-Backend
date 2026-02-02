@@ -7,7 +7,7 @@ namespace Pharma.Controllers
 {
     [ApiController]
     [Route("api/dashboard")]
-    [Authorize]
+    [Authorize(Roles = "admin")]
     public class DashboardController : ControllerBase
     {
         private readonly Supabase.Client _supabase;
@@ -15,19 +15,17 @@ namespace Pharma.Controllers
 
         public DashboardController(Supabase.Client supabase, ILogger<DashboardController> logger)
         {
-            _supabase = supabase ?? throw new ArgumentNullException(nameof(supabase));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _supabase = supabase;
+            _logger = logger;
         }
 
         [HttpGet]
-        [Authorize(Roles = "admin")]
         public async Task<IActionResult> GetDashboardData()
         {
             try
             {
                 _logger.LogInformation("Fetching dashboard data");
 
-                // Fetch sales from last 30 days
                 var thirtyDaysAgo = DateTime.UtcNow.AddDays(-30);
 
                 var salesTask = _supabase
@@ -45,7 +43,7 @@ namespace Pharma.Controllers
                 var sales = salesTask.Result?.Models ?? new List<Sale>();
                 var lowStockProducts = lowStockTask.Result?.Models ?? new List<Product>();
 
-                Product? topProduct = null;
+                ProductDto? topProductDto = null;
 
                 if (sales.Any())
                 {
@@ -57,19 +55,46 @@ namespace Pharma.Controllers
 
                     if (topProductId > 0)
                     {
-                        topProduct = await _supabase
+                        var topProduct = await _supabase
                             .From<Product>()
                             .Where(p => p.Id == topProductId)
                             .Single();
+
+                        if (topProduct != null)
+                        {
+                            topProductDto = new ProductDto
+                            {
+                                Id = topProduct.Id,
+                                ProductCode = topProduct.ProductCode,
+                                Name = topProduct.Name,
+                                Quantity = topProduct.Quantity,
+                                Price = topProduct.Price,
+                                PrixAchat = topProduct.PrixAchat,
+                                SupplierId = topProduct.SupplierId,
+                                CreatedAt = topProduct.CreatedAt
+                            };
+                        }
                     }
                 }
 
-                _logger.LogInformation("Dashboard data fetched successfully. Low stock items: {Count}", lowStockProducts.Count);
+                var lowStockDtos = lowStockProducts.Select(p => new ProductDto
+                {
+                    Id = p.Id,
+                    ProductCode = p.ProductCode,
+                    Name = p.Name,
+                    Quantity = p.Quantity,
+                    Price = p.Price,
+                    PrixAchat = p.PrixAchat,
+                    SupplierId = p.SupplierId,
+                    CreatedAt = p.CreatedAt
+                }).ToList();
+
+                _logger.LogInformation("Dashboard data fetched successfully. Low stock items: {Count}", lowStockDtos.Count);
 
                 return Ok(new
                 {
-                    MostSellingProduct = topProduct,
-                    LowStockProducts = lowStockProducts
+                    MostSellingProduct = topProductDto,
+                    LowStockProducts = lowStockDtos
                 });
             }
             catch (Exception ex)

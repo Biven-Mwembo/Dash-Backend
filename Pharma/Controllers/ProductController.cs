@@ -2,8 +2,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Pharma.Models;
 using Supabase;
-using System.Security.Claims;
-using Supabase.Postgrest.Exceptions;
 
 namespace Pharma.Controllers
 {
@@ -29,19 +27,24 @@ namespace Pharma.Controllers
                 _logger.LogInformation("Fetching all products");
 
                 var response = await _supabase.From<Product>().Get();
+                var products = response?.Models ?? new List<Product>();
 
-                _logger.LogInformation("Found {Count} products", response?.Models?.Count ?? 0);
+                _logger.LogInformation("Found {Count} products", products.Count);
 
-                return Ok(response?.Models ?? new List<Product>());
-            }
-            catch (PostgrestException pgEx)
-            {
-                _logger.LogError(pgEx, "Postgrest error fetching products: {Message}", pgEx.Message);
-                return StatusCode(500, new
+                // ✅ Map to DTOs to avoid serialization issues
+                var productDtos = products.Select(p => new ProductDto
                 {
-                    Message = "Database error fetching products",
-                    Detail = pgEx.Message
-                });
+                    Id = p.Id,
+                    ProductCode = p.ProductCode,
+                    Name = p.Name,
+                    Quantity = p.Quantity,
+                    Price = p.Price,
+                    PrixAchat = p.PrixAchat,
+                    SupplierId = p.SupplierId,
+                    CreatedAt = p.CreatedAt
+                }).ToList();
+
+                return Ok(productDtos);
             }
             catch (Exception ex)
             {
@@ -49,8 +52,7 @@ namespace Pharma.Controllers
                 return StatusCode(500, new
                 {
                     Message = "Error fetching products",
-                    Detail = ex.Message,
-                    InnerException = ex.InnerException?.Message
+                    Detail = ex.Message
                 });
             }
         }
@@ -62,18 +64,31 @@ namespace Pharma.Controllers
             {
                 _logger.LogInformation("Fetching product: {Id}", id);
 
-                var response = await _supabase
+                var product = await _supabase
                     .From<Product>()
                     .Where(p => p.Id == id)
                     .Single();
 
-                if (response == null)
+                if (product == null)
                 {
                     _logger.LogWarning("Product not found: {Id}", id);
                     return NotFound(new { Message = "Product not found" });
                 }
 
-                return Ok(response);
+                // ✅ Map to DTO
+                var productDto = new ProductDto
+                {
+                    Id = product.Id,
+                    ProductCode = product.ProductCode,
+                    Name = product.Name,
+                    Quantity = product.Quantity,
+                    Price = product.Price,
+                    PrixAchat = product.PrixAchat,
+                    SupplierId = product.SupplierId,
+                    CreatedAt = product.CreatedAt
+                };
+
+                return Ok(productDto);
             }
             catch (Exception ex)
             {
@@ -88,7 +103,7 @@ namespace Pharma.Controllers
 
         [HttpPost]
         [Authorize(Roles = "admin")]
-        public async Task<IActionResult> CreateProduct([FromBody] ProductDto dto)
+        public async Task<IActionResult> CreateProduct([FromBody] CreateProductDto dto)
         {
             try
             {
@@ -116,7 +131,20 @@ namespace Pharma.Controllers
 
                 _logger.LogInformation("Product created: {Id}", created.Id);
 
-                return CreatedAtAction(nameof(GetProduct), new { id = created.Id }, created);
+                // ✅ Map to DTO
+                var productDto = new ProductDto
+                {
+                    Id = created.Id,
+                    ProductCode = created.ProductCode,
+                    Name = created.Name,
+                    Quantity = created.Quantity,
+                    Price = created.Price,
+                    PrixAchat = created.PrixAchat,
+                    SupplierId = created.SupplierId,
+                    CreatedAt = created.CreatedAt
+                };
+
+                return CreatedAtAction(nameof(GetProduct), new { id = productDto.Id }, productDto);
             }
             catch (Exception ex)
             {
@@ -131,7 +159,7 @@ namespace Pharma.Controllers
 
         [HttpPut("{id}")]
         [Authorize(Roles = "admin")]
-        public async Task<IActionResult> UpdateProduct(long id, [FromBody] ProductDto dto)
+        public async Task<IActionResult> UpdateProduct(long id, [FromBody] UpdateProductDto dto)
         {
             try
             {
@@ -158,7 +186,20 @@ namespace Pharma.Controllers
 
                 _logger.LogInformation("Product updated: {Id}", id);
 
-                return Ok(existing);
+                // ✅ Map to DTO
+                var productDto = new ProductDto
+                {
+                    Id = existing.Id,
+                    ProductCode = existing.ProductCode,
+                    Name = existing.Name,
+                    Quantity = existing.Quantity,
+                    Price = existing.Price,
+                    PrixAchat = existing.PrixAchat,
+                    SupplierId = existing.SupplierId,
+                    CreatedAt = existing.CreatedAt
+                };
+
+                return Ok(productDto);
             }
             catch (Exception ex)
             {
@@ -230,15 +271,13 @@ namespace Pharma.Controllers
                     {
                         return BadRequest(new
                         {
-                            Message = $"Insufficient stock for {product.Name}. Available: {product.Quantity}, Requested: {item.QuantitySold}"
+                            Message = $"Insufficient stock for {product.Name}"
                         });
                     }
 
-                    // Update stock
                     product.Quantity -= item.QuantitySold;
                     await _supabase.From<Product>().Update(product);
 
-                    // Record sale
                     var sale = new Sale
                     {
                         ProductId = item.ProductId,
@@ -246,8 +285,6 @@ namespace Pharma.Controllers
                         SaleDate = DateTime.UtcNow
                     };
                     await _supabase.From<Sale>().Insert(sale);
-
-                    _logger.LogInformation("Sold {Quantity} of product {ProductId}", item.QuantitySold, item.ProductId);
                 }
 
                 return Ok(new { Success = true, Message = "Sale processed successfully" });
@@ -263,7 +300,6 @@ namespace Pharma.Controllers
             }
         }
 
-        // ✅ ADD THIS - For the 404 error you're getting
         [HttpGet("sales/daily")]
         public async Task<IActionResult> GetDailySales()
         {
@@ -280,14 +316,22 @@ namespace Pharma.Controllers
                     .Get();
 
                 var sales = response?.Models ?? new List<Sale>();
-                var totalQuantity = sales.Sum(s => s.QuantitySold);
+
+                // ✅ Map to DTOs
+                var saleDtos = sales.Select(s => new SaleDto
+                {
+                    Id = s.Id,
+                    ProductId = s.ProductId,
+                    QuantitySold = s.QuantitySold,
+                    SaleDate = s.SaleDate
+                }).ToList();
 
                 return Ok(new
                 {
                     Date = today,
-                    TotalQuantitySold = totalQuantity,
+                    TotalQuantitySold = sales.Sum(s => s.QuantitySold),
                     SalesCount = sales.Count,
-                    Sales = sales
+                    Sales = saleDtos
                 });
             }
             catch (Exception ex)
@@ -300,5 +344,26 @@ namespace Pharma.Controllers
                 });
             }
         }
+    }
+
+    // ✅ Add these DTOs
+    public class CreateProductDto
+    {
+        public string? ProductCode { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public decimal Price { get; set; }
+        public decimal PrixAchat { get; set; }
+        public string? SupplierId { get; set; }
+    }
+
+    public class UpdateProductDto
+    {
+        public string? ProductCode { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public decimal Price { get; set; }
+        public decimal PrixAchat { get; set; }
+        public string? SupplierId { get; set; }
     }
 }
